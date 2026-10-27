@@ -1,0 +1,26 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Python packaging
+*.egg-info/
+build/
+dist/
+
+# Testing
+.coverage
+.pytest_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Editor files
+*.swp
+*.swo
+*~
