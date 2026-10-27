@@ -21,6 +21,7 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         response_format: dict | None = None,
+        options: dict | None = None,
     ) -> str:
         """Send messages to Ollama and return the response."""
 
@@ -32,6 +33,9 @@ class OllamaClient:
                 "num_ctx": 8192,
             },
         }
+
+        if options is not None:
+            payload["options"].update(options)
 
         if response_format is not None:
             payload["format"] = response_format

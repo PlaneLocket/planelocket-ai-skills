@@ -13,7 +13,7 @@ class FakeOllamaClient:
     def __init__(self, response):
         self.response = response
 
-    def chat(self, messages, response_format=None):
+    def chat(self, messages, response_format=None,options=None,):
         return self.response
 
 class TestSkillSelector(unittest.TestCase):

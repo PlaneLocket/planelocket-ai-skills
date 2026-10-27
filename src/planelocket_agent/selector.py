@@ -65,6 +65,9 @@ class SkillSelector:
                 "required": ["skill"],
                 "additionalProperties": False,
             },
+            options={
+                "temperature": 0,
+            },
         )
 
         try:
