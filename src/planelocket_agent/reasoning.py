@@ -87,6 +87,10 @@ class ReasoningAgent:
                     "these requirements. "
                     "Use the arguments field when a tool requires parameters. "
                     "Use an empty arguments object for tools without parameters. "
+                    "For action='tool', provide an authorized tool name, "
+                    "set answer=null, and supply the required arguments. "
+                    "For action='finish', set tool=null, provide a nonempty "
+                    "answer, and use an empty arguments object. "
                     "Return a JSON decision matching the schema."
                 ),
             },
