@@ -6,6 +6,7 @@ from typing import Any
 from planelocket_agent.diagnostics.interfaces import (
     SystemDiagnostics,
 )
+from planelocket_agent.integrations.emby import search_movies
 from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.tools.definitions import (
     ToolArgument,
@@ -41,6 +42,18 @@ class ToolDispatcher:
                     "Measure Linux CPU, memory, and I/O pressure stall information."
                 ),
                 handler=backend.get_resource_pressure,
+            ),
+            "search_movies": ToolDefinition(
+                name="search_movies",
+                description=(
+                    "Search the Emby movie library for candidate titles. "
+                    "Results may include partial matches and do not establish "
+                    "that a requested title is present."
+                ),
+                handler=search_movies,
+                arguments={
+                    "title": "Required string. Movie title or search phrase.",
+                },
             ),
         }
 
