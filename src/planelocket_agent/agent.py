@@ -4,6 +4,7 @@ from pathlib import Path
 
 from planelocket_agent.loader import SkillLoader
 from planelocket_agent.memory.identifiers import new_investigation_id
+from planelocket_agent.memory.models import MemoryRecord
 from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.ollama import OllamaClient
 from planelocket_agent.reasoning import ReasoningAgent, ReasoningResult
@@ -143,3 +144,15 @@ class PlaneLocketAgent:
             completed=result.completed,
             investigation_id=investigation_id,
         )
+
+    def get_investigation_history(
+        self,
+        investigation_id: str,
+    ) -> list[MemoryRecord]:
+        """Retrieve persisted evidence for an investigation."""
+        if self.memory_recorder is None:
+            raise RuntimeError(
+                "Investigation history requires persistent memory to be configured."
+            )
+
+        return self.memory_recorder.get_investigation_history(investigation_id)

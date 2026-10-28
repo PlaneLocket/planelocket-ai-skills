@@ -33,3 +33,10 @@ class MemoryRecorder:
         self.storage.save(record)
 
         return record
+
+    def get_investigation_history(
+        self,
+        investigation_id: str,
+    ) -> list[MemoryRecord]:
+        """Retrieve observations recorded during an investigation."""
+        return self.storage.get_by_investigation(investigation_id)

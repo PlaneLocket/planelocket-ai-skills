@@ -270,11 +270,26 @@ class TestPlaneLocketAgent(unittest.TestCase):
         self.assertEqual(record.kind, MemoryKind.OBSERVATION)
         self.assertEqual(record.source, "get_memory_usage")
         self.assertIsNotNone(record.investigation_id)
-
+        self.assertEqual(
+            agent.get_investigation_history(result.investigation_id),
+            [record],
+        )
         self.assertEqual(
             json.loads(record.content),
             result.observations[0],
         )
+
+    def test_get_investigation_history_requires_memory(self):
+        agent = PlaneLocketAgent(
+            self.skills_dir,
+            FakeOllamaClient(selection=None),
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Investigation history requires persistent memory",
+        ):
+            agent.get_investigation_history("investigation-001")
 
 
 if __name__ == "__main__":

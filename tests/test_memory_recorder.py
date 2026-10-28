@@ -57,6 +57,27 @@ class TestMemoryRecorder(unittest.TestCase):
             MemoryKind.VERIFIED_FACT,
         )
 
+    def test_get_investigation_history(self):
+        recorder = MemoryRecorder(self.storage)
+
+        first = recorder.record_observation(
+            {"tool": "get_memory_usage", "available_bytes": 1024},
+            "investigation-001",
+        )
+        second = recorder.record_observation(
+            {"tool": "get_disk_usage", "free_bytes": 2048},
+            "investigation-001",
+        )
+
+        recorder.record_observation(
+            {"tool": "get_memory_usage", "available_bytes": 4096},
+            "investigation-002",
+        )
+
+        history = recorder.get_investigation_history("investigation-001")
+
+        self.assertEqual(history, [first, second])
+
 
 if __name__ == "__main__":
     unittest.main()
