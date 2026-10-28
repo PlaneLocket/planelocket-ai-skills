@@ -5,6 +5,8 @@ import unittest
 from planelocket_agent.diagnostics.models import (
     DiskUsage,
     MemoryUsage,
+    PressureSample,
+    ResourcePressure,
 )
 from planelocket_agent.tools.dispatcher import ToolDispatcher
 
@@ -15,6 +17,7 @@ class FakeDiagnostics:
     def __init__(self):
         self.memory_calls = 0
         self.disk_calls = 0
+        self.pressure_calls = 0
 
     def get_memory_usage(self) -> MemoryUsage:
         self.memory_calls += 1
@@ -39,6 +42,25 @@ class FakeDiagnostics:
             used_percent=25.0,
         )
 
+    def get_resource_pressure(self) -> ResourcePressure:
+        self.pressure_calls += 1
+
+        sample = PressureSample(
+            avg10=0.0,
+            avg60=0.0,
+            avg300=0.0,
+            total_microseconds=100,
+        )
+
+        return ResourcePressure(
+            cpu_some=sample,
+            cpu_full=None,
+            memory_some=sample,
+            memory_full=sample,
+            io_some=sample,
+            io_full=sample,
+        )
+
 
 class TestToolDispatcher(unittest.TestCase):
     def setUp(self):
@@ -48,7 +70,11 @@ class TestToolDispatcher(unittest.TestCase):
     def test_available_tools(self):
         self.assertEqual(
             self.dispatcher.available_tools(),
-            ("get_memory_usage", "get_disk_usage"),
+            (
+                "get_memory_usage",
+                "get_disk_usage",
+                "get_resource_pressure",
+            ),
         )
 
     def test_memory_dispatch(self):
@@ -103,6 +129,19 @@ class TestToolDispatcher(unittest.TestCase):
             "Diagnostic collection failed",
         ):
             self.dispatcher.execute("get_memory_usage")
+
+    def test_pressure_dispatch(self):
+        response = self.dispatcher.execute("get_resource_pressure")
+
+        self.assertEqual(response["tool"], "get_resource_pressure")
+        self.assertEqual(
+            response["result"]["cpu_some"]["total_microseconds"],
+            100,
+        )
+
+        self.assertEqual(self.backend.pressure_calls, 1)
+        self.assertEqual(self.backend.memory_calls, 0)
+        self.assertEqual(self.backend.disk_calls, 0)
 
 
 if __name__ == "__main__":

@@ -3,12 +3,16 @@
 from planelocket_agent.diagnostics.models import (
     DiskUsage,
     MemoryUsage,
+    ResourcePressure,
 )
 from planelocket_agent.diagnostics.linux.memory import (
     get_memory_usage,
 )
 from planelocket_agent.diagnostics.linux.disk import (
     get_disk_usage,
+)
+from planelocket_agent.diagnostics.linux.pressure import (
+    get_resource_pressure,
 )
 
 
@@ -20,3 +24,6 @@ class LinuxDiagnostics:
 
     def get_disk_usage(self) -> DiskUsage:
         return get_disk_usage()
+
+    def get_resource_pressure(self) -> ResourcePressure:
+        return get_resource_pressure()

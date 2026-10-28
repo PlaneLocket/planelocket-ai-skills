@@ -33,3 +33,32 @@ class SkillLoader:
                 return instructions
 
         raise ValueError(f"Unterminated frontmatter in {skill_file}")
+
+    def list_references(self, skill: Skill) -> tuple[str, ...]:
+        """List available Markdown references for a Skill."""
+
+        references_dir = Path(skill.path) / "references"
+
+        if not references_dir.is_dir():
+            return ()
+
+        return tuple(
+            path.name for path in sorted(references_dir.glob("*.md")) if path.is_file()
+        )
+
+    def read_reference(self, skill: Skill, filename: str) -> str:
+        """Read an authorized Markdown reference for a Skill."""
+
+        references_dir = (Path(skill.path) / "references").resolve()
+
+        if filename not in self.list_references(skill):
+            raise ValueError(f"Unknown Skill reference: {filename}")
+
+        reference_file = (references_dir / filename).resolve()
+
+        if not reference_file.is_relative_to(references_dir):
+            raise ValueError(
+                f"Skill reference escapes authorized directory: {filename}"
+            )
+
+        return reference_file.read_text(encoding="utf-8")

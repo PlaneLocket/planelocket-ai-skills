@@ -17,6 +17,7 @@ class ToolDispatcher:
         self._tools = {
             "get_memory_usage": backend.get_memory_usage,
             "get_disk_usage": backend.get_disk_usage,
+            "get_resource_pressure": backend.get_resource_pressure,
         }
 
     def available_tools(self) -> tuple[str, ...]:

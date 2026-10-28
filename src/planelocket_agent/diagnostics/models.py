@@ -24,3 +24,25 @@ class DiskUsage:
     used_bytes: int
     free_bytes: int
     used_percent: float
+
+
+@dataclass(frozen=True)
+class PressureSample:
+    """Linux PSI stall measurements for one resource and stall type."""
+
+    avg10: float
+    avg60: float
+    avg300: float
+    total_microseconds: int
+
+
+@dataclass(frozen=True)
+class ResourcePressure:
+    """Linux CPU, memory, and I/O pressure measurements."""
+
+    cpu_some: PressureSample
+    cpu_full: PressureSample | None
+    memory_some: PressureSample
+    memory_full: PressureSample
+    io_some: PressureSample
+    io_full: PressureSample
