@@ -2,13 +2,15 @@
 
 from pathlib import Path
 
-from planelocket_agent.tools.knowledge import KnowledgeProvider
 from planelocket_agent.loader import SkillLoader
+from planelocket_agent.memory.identifiers import new_investigation_id
+from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.ollama import OllamaClient
 from planelocket_agent.reasoning import ReasoningAgent, ReasoningResult
 from planelocket_agent.registry import SkillRegistry
 from planelocket_agent.selector import SkillSelector
 from planelocket_agent.tools.dispatcher import ToolDispatcher
+from planelocket_agent.tools.knowledge import KnowledgeProvider
 
 
 class PlaneLocketAgent:
@@ -18,11 +20,13 @@ class PlaneLocketAgent:
         self,
         skills_directory: Path,
         client: OllamaClient,
+        memory_recorder: MemoryRecorder | None = None,
     ):
         self.registry = SkillRegistry(skills_directory)
         self.selector = SkillSelector(client)
         self.loader = SkillLoader()
         self.client = client
+        self.memory_recorder = memory_recorder
 
     def plan(self, user_request: str) -> str:
         """Select a Skill and generate a read-only diagnostic plan."""
@@ -104,13 +108,38 @@ class PlaneLocketAgent:
 
         dispatcher.bind_knowledge(knowledge)
 
+        on_observation = None
+
+        investigation_id = (
+            new_investigation_id() if self.memory_recorder is not None else None
+        )
+
+        on_observation = None
+
+        if self.memory_recorder is not None:
+
+            def on_observation(observation):
+                self.memory_recorder.record_observation(
+                    observation,
+                    investigation_id,
+                )
+
         reasoning_agent = ReasoningAgent(
             client=self.client,
             dispatcher=dispatcher,
             max_tool_calls=max_tool_calls,
+            on_observation=on_observation,
         )
 
-        return reasoning_agent.run(
+        result = reasoning_agent.run(
             user_request=user_request,
             skill_instructions=instructions,
+        )
+
+        return ReasoningResult(
+            answer=result.answer,
+            observations=result.observations,
+            tool_calls=result.tool_calls,
+            completed=result.completed,
+            investigation_id=investigation_id,
         )

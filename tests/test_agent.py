@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 
 from planelocket_agent.agent import PlaneLocketAgent
+from planelocket_agent.memory.models import MemoryKind
+from planelocket_agent.memory.recorder import MemoryRecorder
+from planelocket_agent.memory.storage import MemoryStorage
 from planelocket_agent.tools.definitions import ToolDefinition
 from planelocket_agent.tools.dispatcher import ToolDispatcher
 
@@ -162,6 +165,7 @@ class TestPlaneLocketAgent(unittest.TestCase):
         )
 
         self.assertTrue(result.completed)
+        self.assertIsNone(result.investigation_id)
         self.assertEqual(result.tool_calls, 1)
         self.assertEqual(calls, ["executed"])
 
@@ -182,6 +186,94 @@ class TestPlaneLocketAgent(unittest.TestCase):
         self.assertIn(
             "Return custom diagnostic information.",
             reasoning_prompt,
+        )
+
+    def test_investigate_persists_observations(self):
+        class FakeDiagnostics:
+            def get_memory_usage(self):
+                return {"available_bytes": 8589934592}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        class InvestigationClient:
+            def __init__(self):
+                self.responses = iter(
+                    [
+                        json.dumps({"skill": "linux-health-check"}),
+                        json.dumps(
+                            {
+                                "action": "tool",
+                                "tool": "get_memory_usage",
+                                "answer": None,
+                                "arguments": {},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "action": "finish",
+                                "tool": None,
+                                "answer": "Memory inspection complete.",
+                                "arguments": {},
+                            }
+                        ),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                return next(self.responses)
+
+        storage = MemoryStorage(self.skills_dir / "memory.sqlite3")
+        storage.initialize()
+
+        recorder = MemoryRecorder(storage)
+
+        agent = PlaneLocketAgent(
+            self.skills_dir,
+            InvestigationClient(),
+            memory_recorder=recorder,
+        )
+
+        result = agent.investigate(
+            "Check Kvasir memory.",
+            ToolDispatcher(FakeDiagnostics()),
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.tool_calls, 1)
+
+        # Retrieve the persisted record without knowing its generated ID.
+        import sqlite3
+        from contextlib import closing
+
+        with closing(sqlite3.connect(storage.database_path)) as connection:
+            row = connection.execute("SELECT id FROM memory_records").fetchone()
+
+        self.assertIsNotNone(row)
+
+        record = storage.get(row[0])
+
+        self.assertIsNotNone(result.investigation_id)
+
+        self.assertEqual(
+            record.investigation_id,
+            result.investigation_id,
+        )
+
+        self.assertEqual(
+            storage.get_by_investigation(result.investigation_id),
+            [record],
+        )
+        self.assertEqual(record.kind, MemoryKind.OBSERVATION)
+        self.assertEqual(record.source, "get_memory_usage")
+        self.assertIsNotNone(record.investigation_id)
+
+        self.assertEqual(
+            json.loads(record.content),
+            result.observations[0],
         )
 
 

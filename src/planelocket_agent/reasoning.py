@@ -1,6 +1,7 @@
 """Bounded, iterative reasoning over authorized diagnostic tools."""
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,7 @@ class ReasoningResult:
     observations: tuple[dict[str, Any], ...]
     tool_calls: int
     completed: bool
+    investigation_id: str | None = None
 
 
 class ReasoningAgent:
@@ -28,6 +30,7 @@ class ReasoningAgent:
         client,
         dispatcher: ToolDispatcher,
         max_tool_calls: int = 6,
+        on_observation: Callable[[dict[str, Any]], None] | None = None,
     ):
         if max_tool_calls < 1:
             raise ValueError("max_tool_calls must be positive")
@@ -35,6 +38,7 @@ class ReasoningAgent:
         self._client = client
         self._dispatcher = dispatcher
         self._max_tool_calls = max_tool_calls
+        self._on_observation = on_observation
 
     def run(
         self,
@@ -200,6 +204,9 @@ class ReasoningAgent:
 
             observations.append(result)
             tool_calls += 1
+
+            if self._on_observation is not None:
+                self._on_observation(result)
 
             messages.append(
                 {

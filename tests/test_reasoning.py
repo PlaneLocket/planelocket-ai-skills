@@ -377,6 +377,43 @@ class TestReasoningAgent(unittest.TestCase):
                 max_tool_calls=0,
             )
 
+    def test_observation_callback_runs_before_next_model_decision(self):
+        events = []
+
+        class TrackingClient:
+            def __init__(self):
+                self.responses = iter(
+                    [
+                        tool_decision("get_memory_usage"),
+                        finish_decision("Investigation complete."),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                events.append("model")
+                return next(self.responses)
+
+        def capture_observation(observation):
+            events.append("observation")
+            self.assertEqual(observation["tool"], "get_memory_usage")
+
+        agent = ReasoningAgent(
+            client=TrackingClient(),
+            dispatcher=FakeDispatcher(),
+            on_observation=capture_observation,
+        )
+
+        result = agent.run(
+            "Check memory.",
+            "Use read-only diagnostics.",
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(
+            events,
+            ["model", "observation", "model"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
