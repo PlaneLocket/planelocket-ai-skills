@@ -13,11 +13,16 @@ class FakeOllamaClient:
     def __init__(self, response):
         self.response = response
 
-    def chat(self, messages, response_format=None,options=None,):
+    def chat(
+        self,
+        messages,
+        response_format=None,
+        options=None,
+    ):
         return self.response
 
-class TestSkillSelector(unittest.TestCase):
 
+class TestSkillSelector(unittest.TestCase):
     def setUp(self):
         self.skill = Skill(
             name="linux-health-check",
@@ -26,9 +31,7 @@ class TestSkillSelector(unittest.TestCase):
         )
 
     def test_valid_selection(self):
-        client = FakeOllamaClient(
-            '{"skill": "linux-health-check"}'
-        )
+        client = FakeOllamaClient('{"skill": "linux-health-check"}')
 
         selector = SkillSelector(client)
 
@@ -40,9 +43,7 @@ class TestSkillSelector(unittest.TestCase):
         self.assertEqual(result, self.skill)
 
     def test_no_matching_skill(self):
-        client = FakeOllamaClient(
-            '{"skill": null}'
-        )
+        client = FakeOllamaClient('{"skill": null}')
 
         selector = SkillSelector(client)
 
@@ -54,9 +55,7 @@ class TestSkillSelector(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_unknown_skill_rejected(self):
-        client = FakeOllamaClient(
-            '{"skill": "delete-everything"}'
-        )
+        client = FakeOllamaClient('{"skill": "delete-everything"}')
 
         selector = SkillSelector(client)
 
@@ -67,9 +66,7 @@ class TestSkillSelector(unittest.TestCase):
             )
 
     def test_invalid_json_rejected(self):
-        client = FakeOllamaClient(
-            "I recommend linux-health-check"
-        )
+        client = FakeOllamaClient("I recommend linux-health-check")
 
         selector = SkillSelector(client)
 
@@ -80,9 +77,7 @@ class TestSkillSelector(unittest.TestCase):
             )
 
     def test_empty_registry(self):
-        client = FakeOllamaClient(
-            '{"skill": "linux-health-check"}'
-        )
+        client = FakeOllamaClient('{"skill": "linux-health-check"}')
 
         selector = SkillSelector(client)
 

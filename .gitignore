@@ -24,3 +24,6 @@ dist/
 *.swp
 *.swo
 *~
+
+# Local backup files
+*.bak

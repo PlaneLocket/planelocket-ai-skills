@@ -6,7 +6,6 @@ from planelocket_agent.registry import SkillRegistry
 
 
 class TestSkillRegistry(unittest.TestCase):
-
     def test_discovers_valid_skill(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -45,17 +44,13 @@ class TestSkillRegistry(unittest.TestCase):
             skill_dir.mkdir()
 
             (skill_dir / "SKILL.md").write_text(
-                "---\n"
-                "name: example-skill\n"
-                "---\n",
+                "---\nname: example-skill\n---\n",
                 encoding="utf-8",
             )
 
             registry = SkillRegistry(root)
 
-            with self.assertRaisesRegex(
-                ValueError, "Missing description"
-            ):
+            with self.assertRaisesRegex(ValueError, "Missing description"):
                 registry.discover()
 
     def test_invalid_skill_name(self):
@@ -65,18 +60,13 @@ class TestSkillRegistry(unittest.TestCase):
             skill_dir.mkdir()
 
             (skill_dir / "SKILL.md").write_text(
-                "---\n"
-                "name: Invalid_Skill\n"
-                "description: Test invalid naming.\n"
-                "---\n",
+                "---\nname: Invalid_Skill\ndescription: Test invalid naming.\n---\n",
                 encoding="utf-8",
             )
 
             registry = SkillRegistry(root)
 
-            with self.assertRaisesRegex(
-                ValueError, "Invalid Skill name"
-            ):
+            with self.assertRaisesRegex(ValueError, "Invalid Skill name"):
                 registry.discover()
 
 

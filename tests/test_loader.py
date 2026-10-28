@@ -9,7 +9,6 @@ from planelocket_agent.registry import Skill
 
 
 class TestSkillLoader(unittest.TestCase):
-
     def setUp(self):
         self.loader = SkillLoader()
         self.temporary = tempfile.TemporaryDirectory()
@@ -52,39 +51,21 @@ class TestSkillLoader(unittest.TestCase):
             self.loader.load(self.skill)
 
     def test_missing_frontmatter(self):
-        self.write_skill(
-            "# Instructions\n"
-            "Inspect the system.\n"
-        )
+        self.write_skill("# Instructions\nInspect the system.\n")
 
-        with self.assertRaisesRegex(
-            ValueError, "Missing frontmatter"
-        ):
+        with self.assertRaisesRegex(ValueError, "Missing frontmatter"):
             self.loader.load(self.skill)
 
     def test_unterminated_frontmatter(self):
-        self.write_skill(
-            "---\n"
-            "name: test-skill\n"
-            "description: A test Skill.\n"
-        )
+        self.write_skill("---\nname: test-skill\ndescription: A test Skill.\n")
 
-        with self.assertRaisesRegex(
-            ValueError, "Unterminated frontmatter"
-        ):
+        with self.assertRaisesRegex(ValueError, "Unterminated frontmatter"):
             self.loader.load(self.skill)
 
     def test_empty_instructions(self):
-        self.write_skill(
-            "---\n"
-            "name: test-skill\n"
-            "description: A test Skill.\n"
-            "---\n"
-        )
+        self.write_skill("---\nname: test-skill\ndescription: A test Skill.\n---\n")
 
-        with self.assertRaisesRegex(
-            ValueError, "Skill has no instructions"
-        ):
+        with self.assertRaisesRegex(ValueError, "Skill has no instructions"):
             self.loader.load(self.skill)
 
 

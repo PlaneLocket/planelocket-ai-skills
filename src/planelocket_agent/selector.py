@@ -73,14 +73,10 @@ class SkillSelector:
         try:
             result = json.loads(response)
         except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"LLM returned invalid JSON: {response}"
-            ) from exc
+            raise ValueError(f"LLM returned invalid JSON: {response}") from exc
 
         if not isinstance(result, dict):
-            raise ValueError(
-                "LLM response must be a JSON object"
-            )
+            raise ValueError("LLM response must be a JSON object")
 
         selected_name = result.get("skill")
 
@@ -91,6 +87,4 @@ class SkillSelector:
             if skill.name == selected_name:
                 return skill
 
-        raise ValueError(
-            f"LLM selected an unknown Skill: {selected_name}"
-        )
+        raise ValueError(f"LLM selected an unknown Skill: {selected_name}")

@@ -4,8 +4,10 @@ from pathlib import Path
 
 from planelocket_agent.loader import SkillLoader
 from planelocket_agent.ollama import OllamaClient
+from planelocket_agent.reasoning import ReasoningAgent, ReasoningResult
 from planelocket_agent.registry import SkillRegistry
 from planelocket_agent.selector import SkillSelector
+from planelocket_agent.tools.dispatcher import ToolDispatcher
 
 
 class PlaneLocketAgent:
@@ -64,3 +66,35 @@ class PlaneLocketAgent:
         ]
 
         return self.client.chat(messages)
+
+    def investigate(
+        self,
+        user_request: str,
+        dispatcher: ToolDispatcher,
+        max_tool_calls: int = 6,
+    ) -> ReasoningResult:
+        """Select a Skill and investigate using authorized tools."""
+
+        skills = self.registry.discover()
+        selected = self.selector.select(user_request, skills)
+
+        if selected is None:
+            return ReasoningResult(
+                answer="No matching Skill is available for this request.",
+                observations=(),
+                tool_calls=0,
+                completed=False,
+            )
+
+        instructions = self.loader.load(selected)
+
+        reasoning_agent = ReasoningAgent(
+            client=self.client,
+            dispatcher=dispatcher,
+            max_tool_calls=max_tool_calls,
+        )
+
+        return reasoning_agent.run(
+            user_request=user_request,
+            skill_instructions=instructions,
+        )

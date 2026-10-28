@@ -59,19 +59,13 @@ class OllamaClient:
                 result = json.load(response)
 
         except error.HTTPError as exc:
-            raise RuntimeError(
-                f"Ollama HTTP error: {exc.code}"
-            ) from exc
+            raise RuntimeError(f"Ollama HTTP error: {exc.code}") from exc
 
         except error.URLError as exc:
-            raise ConnectionError(
-                f"Cannot connect to Ollama: {exc.reason}"
-            ) from exc
+            raise ConnectionError(f"Cannot connect to Ollama: {exc.reason}") from exc
 
         try:
             return result["message"]["content"]
 
         except (KeyError, TypeError) as exc:
-            raise ValueError(
-                "Ollama returned an unexpected response"
-            ) from exc
+            raise ValueError("Ollama returned an unexpected response") from exc

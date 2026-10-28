@@ -30,7 +30,6 @@ class SkillRegistry:
         names = set()
 
         for directory in sorted(self.skills_directory.iterdir()):
-
             if not directory.is_dir():
                 continue
 
@@ -42,9 +41,7 @@ class SkillRegistry:
             skill = self._load_skill(skill_file)
 
             if skill.name in names:
-                raise ValueError(
-                    f"Duplicate Skill name: {skill.name}"
-                )
+                raise ValueError(f"Duplicate Skill name: {skill.name}")
 
             names.add(skill.name)
             skills.append(skill)
@@ -62,19 +59,13 @@ class SkillRegistry:
         description = metadata.get("description", "").strip()
 
         if not self.NAME_PATTERN.fullmatch(name):
-            raise ValueError(
-                f"Invalid Skill name in {skill_file}: {name!r}"
-            )
+            raise ValueError(f"Invalid Skill name in {skill_file}: {name!r}")
 
         if not description:
-            raise ValueError(
-                f"Missing description in {skill_file}"
-            )
+            raise ValueError(f"Missing description in {skill_file}")
 
         if skill_file.parent.name != name:
-            raise ValueError(
-                f"Skill directory must match its name: {name}"
-            )
+            raise ValueError(f"Skill directory must match its name: {name}")
 
         return Skill(
             name=name,
@@ -96,7 +87,6 @@ class SkillRegistry:
         multiline = False
 
         for line in lines[1:]:
-
             if line.strip() == "---":
                 return metadata
 

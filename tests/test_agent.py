@@ -15,11 +15,13 @@ class FakeOllamaClient:
         self.calls = []
 
     def chat(self, messages, response_format=None, options=None):
-        self.calls.append({
-            "messages": messages,
-            "response_format": response_format,
-            "options": options,
-        })
+        self.calls.append(
+            {
+                "messages": messages,
+                "response_format": response_format,
+                "options": options,
+            }
+        )
 
         if response_format is not None:
             return self.selection
@@ -28,7 +30,6 @@ class FakeOllamaClient:
 
 
 class TestPlaneLocketAgent(unittest.TestCase):
-
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -49,9 +50,7 @@ class TestPlaneLocketAgent(unittest.TestCase):
         )
 
     def test_generates_plan_with_skill_instructions(self):
-        client = FakeOllamaClient(
-            '{"skill": "linux-health-check"}'
-        )
+        client = FakeOllamaClient('{"skill": "linux-health-check"}')
 
         agent = PlaneLocketAgent(self.skills_dir, client)
 
