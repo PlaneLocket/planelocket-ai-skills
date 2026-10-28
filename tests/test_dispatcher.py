@@ -1,6 +1,7 @@
 """Tests for the authorized diagnostic tool dispatcher."""
 
 import unittest
+from datetime import UTC, datetime
 
 from planelocket_agent.diagnostics.models import (
     DiskUsage,
@@ -8,6 +9,7 @@ from planelocket_agent.diagnostics.models import (
     PressureSample,
     ResourcePressure,
 )
+from planelocket_agent.memory.models import MemoryKind, MemoryRecord
 from planelocket_agent.tools.definitions import (
     ToolArgument,
     ToolDefinition,
@@ -440,6 +442,97 @@ class TestToolDispatcher(unittest.TestCase):
             )["result"],
             "Contents of pressure-stall-information.md",
         )
+
+    def test_bind_memory_retrieves_investigation_history(self):
+        """Historical evidence is accessible through the dispatcher."""
+
+        class FakeMemory:
+            def get_investigation_history(self, investigation_id):
+                return [
+                    MemoryRecord(
+                        id="record-001",
+                        kind=MemoryKind.OBSERVATION,
+                        content='{"tool": "get_memory_usage"}',
+                        source="get_memory_usage",
+                        created_at=datetime(2026, 10, 28, 12, 0, tzinfo=UTC),
+                        investigation_id=investigation_id,
+                    )
+                ]
+
+        self.dispatcher.bind_memory(FakeMemory())
+
+        self.assertIn(
+            "get_investigation_history",
+            self.dispatcher.available_tools(),
+        )
+
+        response = self.dispatcher.execute(
+            "get_investigation_history",
+            investigation_id="investigation-001",
+        )
+
+        self.assertEqual(
+            response["result"],
+            [
+                {
+                    "id": "record-001",
+                    "kind": "observation",
+                    "content": '{"tool": "get_memory_usage"}',
+                    "source": "get_memory_usage",
+                    "created_at": "2026-10-28T12:00:00+00:00",
+                    "investigation_id": "investigation-001",
+                }
+            ],
+        )
+
+    def test_memory_tool_validates_arguments_and_preserves_tools(self):
+        """Memory retrieval must obey dispatcher argument validation."""
+
+        class FakeMemory:
+            def __init__(self):
+                self.calls = []
+
+            def get_investigation_history(self, investigation_id):
+                self.calls.append(investigation_id)
+                return []
+
+        memory = FakeMemory()
+
+        original_tools = set(self.dispatcher.available_tools())
+
+        self.dispatcher.bind_memory(memory)
+
+        # Existing diagnostic tools remain available.
+        self.assertTrue(original_tools.issubset(set(self.dispatcher.available_tools())))
+
+        invalid_arguments = (
+            {},
+            {"investigation_id": ""},
+            {"investigation_id": 123},
+            {"investigation_id": "investigation-001", "command": "whoami"},
+        )
+
+        for arguments in invalid_arguments:
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaises(ValueError),
+            ):
+                self.dispatcher.execute(
+                    "get_investigation_history",
+                    **arguments,
+                )
+
+        # Invalid requests must never reach persistent storage.
+        self.assertEqual(memory.calls, [])
+
+        # A valid request succeeds.
+        response = self.dispatcher.execute(
+            "get_investigation_history",
+            investigation_id="investigation-001",
+        )
+
+        self.assertEqual(response["result"], [])
+        self.assertEqual(memory.calls, ["investigation-001"])
 
 
 if __name__ == "__main__":

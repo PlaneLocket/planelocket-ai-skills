@@ -109,6 +109,11 @@ class PlaneLocketAgent:
 
         dispatcher.bind_knowledge(knowledge)
 
+        if self.memory_recorder is not None:
+            dispatcher.bind_memory(self.memory_recorder)
+        else:
+            dispatcher.unbind_memory()
+
         on_observation = None
 
         investigation_id = (

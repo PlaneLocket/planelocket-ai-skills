@@ -6,6 +6,7 @@ from typing import Any
 from planelocket_agent.diagnostics.interfaces import (
     SystemDiagnostics,
 )
+from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.tools.definitions import (
     ToolArgument,
     ToolDefinition,
@@ -71,6 +72,52 @@ class ToolDispatcher:
                 ),
             },
         )
+
+    def bind_memory(self, memory: MemoryRecorder) -> None:
+        """Register read-only historical evidence retrieval."""
+
+        self._memory = memory
+
+        self._definitions["get_investigation_history"] = ToolDefinition(
+            name="get_investigation_history",
+            description=(
+                "Retrieve recorded observations from a previous investigation "
+                "using its investigation ID. Returns historical evidence, "
+                "not necessarily current system state."
+            ),
+            handler=self._get_investigation_history,
+            arguments={
+                "investigation_id": (
+                    "Required string. Identifier of the investigation to retrieve."
+                ),
+            },
+        )
+
+    def unbind_memory(self) -> None:
+        """Remove historical-memory access from this dispatcher."""
+
+        self._definitions.pop("get_investigation_history", None)
+        self._memory = None
+
+    def _get_investigation_history(
+        self,
+        investigation_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return historical records with timestamps and provenance."""
+
+        records = self._memory.get_investigation_history(investigation_id)
+
+        return [
+            {
+                "id": record.id,
+                "kind": record.kind.value,
+                "content": record.content,
+                "source": record.source,
+                "created_at": record.created_at.isoformat(),
+                "investigation_id": record.investigation_id,
+            }
+            for record in records
+        ]
 
     def available_tools(self) -> tuple[str, ...]:
         """Return the names of approved tools."""

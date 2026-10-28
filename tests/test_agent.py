@@ -291,6 +291,333 @@ class TestPlaneLocketAgent(unittest.TestCase):
         ):
             agent.get_investigation_history("investigation-001")
 
+    def test_investigate_exposes_memory_tool_to_reasoning_model(self):
+        """Configured memory is advertised to the reasoning model."""
+
+        class FakeDiagnostics:
+            def get_memory_usage(self):
+                return {}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        class InvestigationClient:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter(
+                    [
+                        json.dumps({"skill": "linux-health-check"}),
+                        json.dumps(
+                            {
+                                "action": "finish",
+                                "tool": None,
+                                "answer": "No diagnostics required.",
+                                "arguments": {},
+                            }
+                        ),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                self.calls.append(
+                    {
+                        "messages": list(messages),
+                        "response_format": response_format,
+                        "options": options,
+                    }
+                )
+                return next(self.responses)
+
+        storage = MemoryStorage(self.skills_dir / "memory.sqlite3")
+        storage.initialize()
+
+        client = InvestigationClient()
+
+        agent = PlaneLocketAgent(
+            self.skills_dir,
+            client,
+            memory_recorder=MemoryRecorder(storage),
+        )
+
+        dispatcher = ToolDispatcher(FakeDiagnostics())
+
+        result = agent.investigate(
+            "Check Kvasir memory.",
+            dispatcher,
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.tool_calls, 0)
+        self.assertIsNotNone(result.investigation_id)
+
+        # Inspect the actual tool definitions sent to the reasoning model.
+        reasoning_prompt = client.calls[1]["messages"][1]["content"]
+
+        self.assertIn("get_investigation_history", reasoning_prompt)
+        self.assertIn("investigation_id", reasoning_prompt)
+
+        # Existing diagnostic and knowledge capabilities remain available.
+        self.assertIn("get_memory_usage", reasoning_prompt)
+        self.assertIn("read_reference", reasoning_prompt)
+
+    def test_investigate_retrieves_previous_evidence(self):
+        """The reasoning model can retrieve persisted historical evidence."""
+
+        class FakeDiagnostics:
+            def get_memory_usage(self):
+                return {}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        class InvestigationClient:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter(
+                    [
+                        json.dumps({"skill": "linux-health-check"}),
+                        json.dumps(
+                            {
+                                "action": "tool",
+                                "tool": "get_investigation_history",
+                                "answer": None,
+                                "arguments": {
+                                    "investigation_id": "previous-investigation"
+                                },
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "action": "finish",
+                                "tool": None,
+                                "answer": "Historical evidence retrieved.",
+                                "arguments": {},
+                            }
+                        ),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                self.calls.append(
+                    {
+                        "messages": list(messages),
+                        "response_format": response_format,
+                        "options": options,
+                    }
+                )
+                return next(self.responses)
+
+        storage = MemoryStorage(self.skills_dir / "memory.sqlite3")
+        storage.initialize()
+        recorder = MemoryRecorder(storage)
+
+        # Seed evidence from an earlier investigation.
+        original = recorder.record_observation(
+            {
+                "tool": "get_memory_usage",
+                "result": {"available_bytes": 8589934592},
+            },
+            investigation_id="previous-investigation",
+        )
+
+        client = InvestigationClient()
+        agent = PlaneLocketAgent(
+            self.skills_dir,
+            client,
+            memory_recorder=recorder,
+        )
+
+        result = agent.investigate(
+            "Review the previous memory investigation.",
+            ToolDispatcher(FakeDiagnostics()),
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertNotEqual(
+            result.investigation_id,
+            "previous-investigation",
+        )
+
+        # Historical evidence retains its original provenance.
+        retrieved = result.observations[0]["result"]
+
+        self.assertEqual(len(retrieved), 1)
+        self.assertEqual(retrieved[0]["id"], original.id)
+        self.assertEqual(retrieved[0]["kind"], "observation")
+        self.assertEqual(retrieved[0]["source"], "get_memory_usage")
+        self.assertEqual(
+            retrieved[0]["investigation_id"],
+            "previous-investigation",
+        )
+
+        # Confirm the model received the retrieved evidence.
+        final_messages = client.calls[2]["messages"]
+
+        self.assertTrue(
+            any(original.id in message["content"] for message in final_messages)
+        )
+
+        # Retrieval must not alter the original evidence.
+        self.assertEqual(storage.get(original.id), original)
+
+    def test_investigate_does_not_expose_memory_without_recorder(self):
+        """Historical memory is unavailable when not configured."""
+
+        class FakeDiagnostics:
+            def get_memory_usage(self):
+                return {}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        class InvestigationClient:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter(
+                    [
+                        json.dumps({"skill": "linux-health-check"}),
+                        json.dumps(
+                            {
+                                "action": "finish",
+                                "tool": None,
+                                "answer": "Investigation complete.",
+                                "arguments": {},
+                            }
+                        ),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                self.calls.append(
+                    {
+                        "messages": list(messages),
+                        "response_format": response_format,
+                        "options": options,
+                    }
+                )
+                return next(self.responses)
+
+        client = InvestigationClient()
+
+        agent = PlaneLocketAgent(
+            self.skills_dir,
+            client,
+        )
+
+        dispatcher = ToolDispatcher(FakeDiagnostics())
+
+        result = agent.investigate(
+            "Check Kvasir memory.",
+            dispatcher,
+        )
+
+        self.assertTrue(result.completed)
+        self.assertIsNone(result.investigation_id)
+
+        # Memory tools must not be advertised to the reasoning model.
+        reasoning_prompt = client.calls[1]["messages"][1]["content"]
+
+        self.assertNotIn(
+            "get_investigation_history",
+            reasoning_prompt,
+        )
+
+        self.assertNotIn(
+            "get_investigation_history",
+            dispatcher.available_tools(),
+        )
+
+        # Existing capabilities remain available.
+        self.assertIn("get_memory_usage", reasoning_prompt)
+        self.assertIn("read_reference", reasoning_prompt)
+
+    def test_investigate_does_not_inherit_previous_memory_binding(self):
+        """A memory-disabled agent must not inherit another agent's access."""
+
+        class FakeDiagnostics:
+            def get_memory_usage(self):
+                return {}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        class InvestigationClient:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter(
+                    [
+                        json.dumps({"skill": "linux-health-check"}),
+                        json.dumps(
+                            {
+                                "action": "finish",
+                                "tool": None,
+                                "answer": "Investigation complete.",
+                                "arguments": {},
+                            }
+                        ),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                self.calls.append(
+                    {
+                        "messages": list(messages),
+                        "response_format": response_format,
+                        "options": options,
+                    }
+                )
+                return next(self.responses)
+
+        storage = MemoryStorage(self.skills_dir / "memory.sqlite3")
+        storage.initialize()
+        recorder = MemoryRecorder(storage)
+
+        dispatcher = ToolDispatcher(FakeDiagnostics())
+
+        # First investigation: memory access is explicitly configured.
+        enabled_client = InvestigationClient()
+        enabled_agent = PlaneLocketAgent(
+            self.skills_dir,
+            enabled_client,
+            memory_recorder=recorder,
+        )
+
+        enabled_agent.investigate("Check Kvasir.", dispatcher)
+
+        self.assertIn(
+            "get_investigation_history",
+            dispatcher.available_tools(),
+        )
+
+        # Second investigation: same dispatcher, but no memory configured.
+        disabled_client = InvestigationClient()
+        disabled_agent = PlaneLocketAgent(
+            self.skills_dir,
+            disabled_client,
+        )
+
+        disabled_agent.investigate("Check Kvasir.", dispatcher)
+
+        reasoning_prompt = disabled_client.calls[1]["messages"][1]["content"]
+
+        self.assertNotIn(
+            "get_investigation_history",
+            reasoning_prompt,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
