@@ -1,10 +1,13 @@
 """Unit tests for the PlaneLocket agent orchestrator."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from planelocket_agent.agent import PlaneLocketAgent
+from planelocket_agent.tools.definitions import ToolDefinition
+from planelocket_agent.tools.dispatcher import ToolDispatcher
 
 
 class FakeOllamaClient:
@@ -89,6 +92,97 @@ class TestPlaneLocketAgent(unittest.TestCase):
         )
 
         self.assertEqual(len(client.calls), 1)
+
+    def test_investigate_preserves_custom_tools(self):
+        class FakeDiagnostics:
+            def get_memory_usage(self):
+                return {}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        class InvestigationClient:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter(
+                    [
+                        json.dumps({"skill": "linux-health-check"}),
+                        json.dumps(
+                            {
+                                "action": "tool",
+                                "tool": "custom_tool",
+                                "answer": None,
+                                "arguments": {},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "action": "finish",
+                                "tool": None,
+                                "answer": "Custom tool executed successfully.",
+                                "arguments": {},
+                            }
+                        ),
+                    ]
+                )
+
+            def chat(self, messages, response_format=None, options=None):
+                self.calls.append(
+                    {
+                        "messages": list(messages),
+                        "response_format": response_format,
+                        "options": options,
+                    }
+                )
+                return next(self.responses)
+
+        client = InvestigationClient()
+        dispatcher = ToolDispatcher(FakeDiagnostics())
+
+        calls = []
+
+        def custom_handler():
+            calls.append("executed")
+            return {"status": "available"}
+
+        dispatcher._definitions["custom_tool"] = ToolDefinition(
+            name="custom_tool",
+            description="Return custom diagnostic information.",
+            handler=custom_handler,
+        )
+
+        agent = PlaneLocketAgent(self.skills_dir, client)
+
+        result = agent.investigate(
+            "Check Kvasir using the custom diagnostic tool.",
+            dispatcher,
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(calls, ["executed"])
+
+        self.assertEqual(
+            result.observations[0],
+            {
+                "tool": "custom_tool",
+                "result": {"status": "available"},
+            },
+        )
+
+        self.assertIn("custom_tool", dispatcher.available_tools())
+        self.assertIn("read_reference", dispatcher.available_tools())
+
+        reasoning_prompt = client.calls[1]["messages"][1]["content"]
+
+        self.assertIn("custom_tool", reasoning_prompt)
+        self.assertIn(
+            "Return custom diagnostic information.",
+            reasoning_prompt,
+        )
 
 
 if __name__ == "__main__":

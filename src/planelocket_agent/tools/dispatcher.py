@@ -6,7 +6,10 @@ from typing import Any
 from planelocket_agent.diagnostics.interfaces import (
     SystemDiagnostics,
 )
-from planelocket_agent.tools.definitions import ToolDefinition
+from planelocket_agent.tools.definitions import (
+    ToolArgument,
+    ToolDefinition,
+)
 from planelocket_agent.tools.knowledge import KnowledgeProvider
 
 
@@ -40,31 +43,34 @@ class ToolDispatcher:
             ),
         }
 
-        self._knowledge = knowledge
+        self._knowledge = None
 
         if knowledge is not None:
-            self._definitions["list_references"] = ToolDefinition(
-                name="list_references",
-                description=(
-                    "List knowledge reference documents "
-                    "available for the selected Skill."
-                ),
-                handler=knowledge.list_references,
-            )
+            self.bind_knowledge(knowledge)
 
-            self._definitions["read_reference"] = ToolDefinition(
-                name="read_reference",
-                description=(
-                    "Read a knowledge reference document for the selected Skill."
+    def bind_knowledge(self, knowledge: KnowledgeProvider) -> None:
+        """Register knowledge tools without replacing existing tools."""
+
+        self._knowledge = knowledge
+
+        self._definitions["list_references"] = ToolDefinition(
+            name="list_references",
+            description=(
+                "List knowledge reference documents available for the selected Skill."
+            ),
+            handler=knowledge.list_references,
+        )
+
+        self._definitions["read_reference"] = ToolDefinition(
+            name="read_reference",
+            description=("Read a knowledge reference document for the selected Skill."),
+            handler=knowledge.read_reference,
+            arguments={
+                "filename": (
+                    "Required string. Must be a filename returned by list_references."
                 ),
-                handler=knowledge.read_reference,
-                arguments={
-                    "filename": (
-                        "Required string. Must be a filename "
-                        "returned by list_references."
-                    ),
-                },
-            )
+            },
+        )
 
     def available_tools(self) -> tuple[str, ...]:
         """Return the names of approved tools."""
@@ -89,25 +95,50 @@ class ToolDispatcher:
             raise ValueError(f"Unknown or unauthorized tool: {tool_name}")
 
         definition = self._definitions[tool_name]
-        expected_arguments = set(definition.arguments)
+        required_arguments = {
+            name
+            for name, specification in definition.arguments.items()
+            if not isinstance(specification, ToolArgument) or specification.required
+        }
+
+        allowed_arguments = set(definition.arguments)
         received_arguments = set(arguments)
 
-        if expected_arguments != received_arguments:
-            if not expected_arguments:
+        missing = required_arguments - received_arguments
+        unexpected = received_arguments - allowed_arguments
+
+        if missing or unexpected:
+            if not allowed_arguments:
                 raise ValueError(f"Tool {tool_name} does not accept arguments")
 
             raise ValueError(
-                f"Tool {tool_name} requires exactly these arguments: "
-                f"{sorted(expected_arguments)}. "
-                f"Received argument keys: {sorted(received_arguments)}"
+                f"Tool {tool_name} has invalid arguments. "
+                f"Missing: {sorted(missing)}. "
+                f"Unexpected: {sorted(unexpected)}"
             )
 
-        for name in expected_arguments:
-            value = arguments[name]
+        for name, value in arguments.items():
+            specification = definition.arguments[name]
 
-            if not isinstance(value, str) or not value:
+            if isinstance(specification, ToolArgument):
+                expected_type = specification.value_type
+                allow_empty = specification.allow_empty
+            else:
+                expected_type = str
+                allow_empty = False
+
+            # bool is a subclass of int in Python, but should not
+            # satisfy an integer parameter contract.
+            if expected_type is int:
+                valid_type = type(value) is int
+            else:
+                valid_type = isinstance(value, expected_type)
+
+            if not valid_type:
+                raise ValueError(f"{name} must be of type {expected_type.__name__}")
+
+            if isinstance(value, str) and not allow_empty and not value:
                 raise ValueError(f"{name} must be a nonempty string")
-
         result = definition.handler(**arguments)
 
         if hasattr(result, "__dataclass_fields__"):

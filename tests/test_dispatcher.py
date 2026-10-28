@@ -8,7 +8,10 @@ from planelocket_agent.diagnostics.models import (
     PressureSample,
     ResourcePressure,
 )
-from planelocket_agent.tools.definitions import ToolDefinition
+from planelocket_agent.tools.definitions import (
+    ToolArgument,
+    ToolDefinition,
+)
 from planelocket_agent.tools.dispatcher import ToolDispatcher
 
 
@@ -289,6 +292,153 @@ class TestToolDispatcher(unittest.TestCase):
                 "tool": "example_tool",
                 "result": {"status": "ok"},
             },
+        )
+
+    def test_typed_optional_arguments(self):
+        calls = []
+
+        def search_handler(query, limit=10):
+            calls.append((query, limit))
+            return {"query": query, "limit": limit}
+
+        definition = ToolDefinition(
+            name="search_example",
+            description="Search example records.",
+            handler=search_handler,
+            arguments={
+                "query": ToolArgument(
+                    description="Search query.",
+                ),
+                "limit": ToolArgument(
+                    description="Maximum results.",
+                    value_type=int,
+                    required=False,
+                ),
+            },
+        )
+
+        self.dispatcher._definitions["search_example"] = definition
+
+        # Optional argument omitted: handler uses its default.
+        result = self.dispatcher.execute(
+            "search_example",
+            query="pressure",
+        )
+
+        self.assertEqual(
+            result["result"],
+            {"query": "pressure", "limit": 10},
+        )
+
+        # Explicit integer argument.
+        result = self.dispatcher.execute(
+            "search_example",
+            query="pressure",
+            limit=5,
+        )
+
+        self.assertEqual(result["result"]["limit"], 5)
+
+        # Reject boolean values masquerading as integers.
+        with self.assertRaises(ValueError):
+            self.dispatcher.execute(
+                "search_example",
+                query="pressure",
+                limit=True,
+            )
+
+        # Reject incorrectly typed arguments.
+        with self.assertRaises(ValueError):
+            self.dispatcher.execute(
+                "search_example",
+                query=123,
+            )
+
+        # Reject missing required arguments.
+        with self.assertRaises(ValueError):
+            self.dispatcher.execute(
+                "search_example",
+                limit=5,
+            )
+
+        # Reject unexpected arguments.
+        with self.assertRaises(ValueError):
+            self.dispatcher.execute(
+                "search_example",
+                query="pressure",
+                command="whoami",
+            )
+
+        # Only valid requests should reach the handler.
+        self.assertEqual(
+            calls,
+            [
+                ("pressure", 10),
+                ("pressure", 5),
+            ],
+        )
+
+    def test_register_preserves_existing_tools(self):
+        def custom_handler():
+            return {"status": "available"}
+
+        definition = ToolDefinition(
+            name="custom_tool",
+            description="A custom registered capability.",
+            handler=custom_handler,
+        )
+
+        self.dispatcher._definitions["custom_tool"] = definition
+
+        self.assertIn(
+            "custom_tool",
+            self.dispatcher.available_tools(),
+        )
+
+        self.assertEqual(
+            self.dispatcher.execute("custom_tool")["result"],
+            {"status": "available"},
+        )
+
+    def test_bind_knowledge_preserves_existing_tools(self):
+        class FakeKnowledge:
+            def list_references(self):
+                return ("pressure-stall-information.md",)
+
+            def read_reference(self, filename):
+                return f"Contents of {filename}"
+
+        def custom_handler():
+            return {"status": "available"}
+
+        self.dispatcher._definitions["custom_tool"] = ToolDefinition(
+            name="custom_tool",
+            description="A custom registered capability.",
+            handler=custom_handler,
+        )
+
+        original_tools = set(self.dispatcher.available_tools())
+
+        self.dispatcher.bind_knowledge(FakeKnowledge())
+
+        self.assertTrue(original_tools.issubset(set(self.dispatcher.available_tools())))
+
+        self.assertEqual(
+            self.dispatcher.execute("custom_tool")["result"],
+            {"status": "available"},
+        )
+
+        self.assertEqual(
+            self.dispatcher.execute("list_references")["result"],
+            ("pressure-stall-information.md",),
+        )
+
+        self.assertEqual(
+            self.dispatcher.execute(
+                "read_reference",
+                filename="pressure-stall-information.md",
+            )["result"],
+            "Contents of pressure-stall-information.md",
         )
 
 

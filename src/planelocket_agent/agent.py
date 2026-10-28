@@ -102,10 +102,7 @@ class PlaneLocketAgent:
         # Bind reference access to the Skill selected for this investigation.
         knowledge = KnowledgeProvider(selected, self.loader)
 
-        dispatcher = ToolDispatcher(
-            backend=dispatcher._backend,
-            knowledge=knowledge,
-        )
+        dispatcher.bind_knowledge(knowledge)
 
         reasoning_agent = ReasoningAgent(
             client=self.client,
