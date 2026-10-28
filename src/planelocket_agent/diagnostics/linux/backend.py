@@ -1,18 +1,18 @@
 """Linux implementation of system diagnostics."""
 
-from planelocket_agent.diagnostics.models import (
-    DiskUsage,
-    MemoryUsage,
-    ResourcePressure,
+from planelocket_agent.diagnostics.linux.disk import (
+    get_disk_usage,
 )
 from planelocket_agent.diagnostics.linux.memory import (
     get_memory_usage,
 )
-from planelocket_agent.diagnostics.linux.disk import (
-    get_disk_usage,
-)
 from planelocket_agent.diagnostics.linux.pressure import (
     get_resource_pressure,
+)
+from planelocket_agent.diagnostics.models import (
+    DiskUsage,
+    MemoryUsage,
+    ResourcePressure,
 )
 
 

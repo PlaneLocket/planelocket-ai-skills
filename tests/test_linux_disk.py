@@ -2,8 +2,8 @@
 
 import tempfile
 import unittest
-from pathlib import Path
 from collections import namedtuple
+from pathlib import Path
 
 DiskUsageResult = namedtuple(
     "DiskUsageResult",
@@ -11,8 +11,8 @@ DiskUsageResult = namedtuple(
 )
 from unittest.mock import patch
 
-from planelocket_agent.diagnostics.models import DiskUsage
 from planelocket_agent.diagnostics.linux.disk import get_disk_usage
+from planelocket_agent.diagnostics.models import DiskUsage
 
 
 class TestLinuxDisk(unittest.TestCase):
@@ -63,12 +63,14 @@ class TestLinuxDisk(unittest.TestCase):
             get_disk_usage(file_path)
 
     def test_non_mount_point_rejected(self):
-        with patch(
-            "planelocket_agent.diagnostics.linux.disk.os.path.ismount",
-            return_value=False,
+        with (
+            patch(
+                "planelocket_agent.diagnostics.linux.disk.os.path.ismount",
+                return_value=False,
+            ),
+            self.assertRaisesRegex(ValueError, "not a mount point"),
         ):
-            with self.assertRaisesRegex(ValueError, "not a mount point"):
-                get_disk_usage(self.mount_point)
+            get_disk_usage(self.mount_point)
 
     def test_zero_capacity_rejected(self):
         with (
@@ -80,9 +82,9 @@ class TestLinuxDisk(unittest.TestCase):
                 "planelocket_agent.diagnostics.linux.disk.shutil.disk_usage",
                 return_value=DiskUsageResult(0, 0, 0),
             ),
+            self.assertRaisesRegex(ValueError, "Invalid filesystem capacity"),
         ):
-            with self.assertRaisesRegex(ValueError, "Invalid filesystem capacity"):
-                get_disk_usage(self.mount_point)
+            get_disk_usage(self.mount_point)
 
 
 if __name__ == "__main__":

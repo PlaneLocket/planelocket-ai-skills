@@ -24,19 +24,21 @@ class MemoryStorage:
             exist_ok=True,
         )
 
-        with closing(sqlite3.connect(self.database_path)) as connection:
-            with connection:
-                version = connection.execute("PRAGMA user_version").fetchone()[0]
+        with (
+            closing(sqlite3.connect(self.database_path)) as connection,
+            connection,
+        ):
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-                if version > SCHEMA_VERSION:
-                    raise RuntimeError(
-                        f"Database schema version {version} is newer "
-                        f"than supported version {SCHEMA_VERSION}"
-                    )
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema version {version} is newer "
+                    f"than supported version {SCHEMA_VERSION}"
+                )
 
-                if version <= SCHEMA_VERSION:
-                    connection.execute(
-                        """
+            if version <= SCHEMA_VERSION:
+                connection.execute(
+                    """
                         CREATE TABLE IF NOT EXISTS memory_records (
                             id TEXT PRIMARY KEY,
                             kind TEXT NOT NULL CHECK (
@@ -52,9 +54,9 @@ class MemoryStorage:
                             investigation_id TEXT
                         )
                         """
-                    )
-                    connection.execute(
-                        """
+                )
+                connection.execute(
+                    """
                         CREATE INDEX IF NOT EXISTS
                             idx_memory_records_investigation
                         ON memory_records (
@@ -63,16 +65,18 @@ class MemoryStorage:
                             id
                         )
                         """
-                    )
-                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                )
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def save(self, record: MemoryRecord) -> None:
         """Persist a memory record without overwriting existing records."""
 
-        with closing(sqlite3.connect(self.database_path)) as connection:
-            with connection:
-                connection.execute(
-                    """
+        with (
+            closing(sqlite3.connect(self.database_path)) as connection,
+            connection,
+        ):
+            connection.execute(
+                """
                     INSERT INTO memory_records (
                         id,
                         kind,
@@ -83,15 +87,15 @@ class MemoryStorage:
                     )
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        record.id,
-                        record.kind.value,
-                        record.content,
-                        record.source,
-                        record.created_at.isoformat(),
-                        record.investigation_id,
-                    ),
-                )
+                (
+                    record.id,
+                    record.kind.value,
+                    record.content,
+                    record.source,
+                    record.created_at.isoformat(),
+                    record.investigation_id,
+                ),
+            )
 
     def get(self, record_id: str) -> MemoryRecord | None:
         """Retrieve a memory record by ID."""

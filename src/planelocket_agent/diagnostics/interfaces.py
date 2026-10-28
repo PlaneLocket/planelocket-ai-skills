@@ -2,7 +2,6 @@
 
 from typing import Protocol, runtime_checkable
 
-
 from planelocket_agent.diagnostics.models import (
     DiskUsage,
     MemoryUsage,

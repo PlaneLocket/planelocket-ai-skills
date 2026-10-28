@@ -1,6 +1,5 @@
 """Tests for diagnostic evidence analysis."""
 
-import json
 import unittest
 
 from planelocket_agent.tools.analyzer import DiagnosticAnalyzer

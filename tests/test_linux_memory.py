@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from planelocket_agent.diagnostics.models import MemoryUsage
 from planelocket_agent.diagnostics.linux.memory import (
     get_memory_usage,
 )
+from planelocket_agent.diagnostics.models import MemoryUsage
 
 
 class TestLinuxMemory(unittest.TestCase):

@@ -1,0 +1,4 @@
+[tool.ruff.lint.per-file-ignores]
+"src/planelocket_agent/selector.py" = ["TRY004"]
+"src/planelocket_agent/tools/decisions.py" = ["TRY004"]
+"src/planelocket_agent/tools/requests.py" = ["TRY004"]

@@ -1,7 +1,7 @@
 """HTTP adapter for the Ollama inference server."""
 
 import json
-from urllib import request, error
+from urllib import error, request
 
 
 class OllamaClient:

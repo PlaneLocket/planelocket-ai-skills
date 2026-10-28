@@ -1,7 +1,7 @@
 """Data models for persistent agent memory."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 
@@ -36,5 +36,5 @@ class MemoryRecord:
         object.__setattr__(
             self,
             "created_at",
-            self.created_at.astimezone(timezone.utc),
+            self.created_at.astimezone(UTC),
         )

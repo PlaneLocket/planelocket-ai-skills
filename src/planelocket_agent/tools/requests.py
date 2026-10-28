@@ -1,9 +1,8 @@
 """Validation of model-proposed diagnostic tool requests."""
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
-
-from collections.abc import Collection
 
 
 @dataclass(frozen=True)
