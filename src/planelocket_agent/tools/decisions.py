@@ -1,6 +1,6 @@
 """Validate decisions made by the reasoning agent."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
@@ -11,6 +11,7 @@ class AgentDecision:
     action: Literal["tool", "finish"]
     tool: str | None
     answer: str | None
+    arguments: dict[str, Any] = field(default_factory=dict)
 
 
 def validate_agent_decision(
@@ -22,14 +23,25 @@ def validate_agent_decision(
     if not isinstance(payload, dict):
         raise ValueError("Agent decision must be a JSON object")
 
-    if set(payload) != {"action", "tool", "answer"}:
+    required = {"action", "tool", "answer"}
+    permitted = required | {"arguments"}
+
+    if not required.issubset(payload) or not set(payload).issubset(permitted):
         raise ValueError(
-            "Agent decision must contain exactly 'action', 'tool', and 'answer'"
+            "Agent decision must contain 'action', 'tool', and 'answer', "
+            "with optional 'arguments'"
         )
 
     action = payload["action"]
     tool = payload["tool"]
     answer = payload["answer"]
+    arguments = payload.get("arguments", {})
+
+    if not isinstance(arguments, dict):
+        raise ValueError("Tool arguments must be a JSON object")
+
+    if not all(isinstance(key, str) for key in arguments):
+        raise ValueError("Tool argument names must be strings")
 
     if action == "tool":
         if not isinstance(tool, str) or tool not in allowed_tools:
@@ -45,6 +57,9 @@ def validate_agent_decision(
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("Finish decisions require a nonempty answer")
 
+        if arguments:
+            raise ValueError("Finish decisions must not include tool arguments")
+
     else:
         raise ValueError(f"Unknown agent action: {action}")
 
@@ -52,4 +67,5 @@ def validate_agent_decision(
         action=action,
         tool=tool,
         answer=answer.strip() if isinstance(answer, str) else None,
+        arguments=arguments.copy(),
     )

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from planelocket_agent.tools.knowledge import KnowledgeProvider
 from planelocket_agent.loader import SkillLoader
 from planelocket_agent.ollama import OllamaClient
 from planelocket_agent.reasoning import ReasoningAgent, ReasoningResult
@@ -87,6 +88,24 @@ class PlaneLocketAgent:
             )
 
         instructions = self.loader.load(selected)
+
+        references = self.loader.list_references(selected)
+
+        if references:
+            instructions += (
+                "\n\n## Available Knowledge References\n\n"
+                "The following reference documents are available "
+                "for optional retrieval using read_reference:\n"
+                + "\n".join(f"- {name}" for name in references)
+            )
+
+        # Bind reference access to the Skill selected for this investigation.
+        knowledge = KnowledgeProvider(selected, self.loader)
+
+        dispatcher = ToolDispatcher(
+            backend=dispatcher._backend,
+            knowledge=knowledge,
+        )
 
         reasoning_agent = ReasoningAgent(
             client=self.client,
