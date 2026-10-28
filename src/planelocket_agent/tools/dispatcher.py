@@ -6,7 +6,12 @@ from typing import Any
 from planelocket_agent.diagnostics.interfaces import (
     SystemDiagnostics,
 )
-from planelocket_agent.integrations.emby import search_movies
+from planelocket_agent.integrations.emby import (
+    get_episodes,
+    get_seasons,
+    search_movies,
+    search_series,
+)
 from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.tools.definitions import (
     ToolArgument,
@@ -53,6 +58,41 @@ class ToolDispatcher:
                 handler=search_movies,
                 arguments={
                     "title": "Required string. Movie title or search phrase.",
+                },
+            ),
+            "search_series": ToolDefinition(
+                name="search_series",
+                description=(
+                    "Search the Emby television library for candidate series titles. "
+                    "Results may include partial matches and do not establish "
+                    "that a requested series is present."
+                ),
+                handler=search_series,
+                arguments={
+                    "title": "Required string. Television series title or search phrase.",
+                },
+            ),
+            "get_seasons": ToolDefinition(
+                name="get_seasons",
+                description=(
+                    "List available seasons of an Emby television series. "
+                    "Requires a series ID obtained from search_series."
+                ),
+                handler=get_seasons,
+                arguments={
+                    "series_id": "Required string. Emby television series ID.",
+                },
+            ),
+            "get_episodes": ToolDefinition(
+                name="get_episodes",
+                description=(
+                    "List available episodes in a specific Emby television season. "
+                    "Requires series and season IDs obtained from previous searches."
+                ),
+                handler=get_episodes,
+                arguments={
+                    "series_id": "Required string. Emby television series ID.",
+                    "season_id": "Required string. Emby season ID.",
                 },
             ),
         }
