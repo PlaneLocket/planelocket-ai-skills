@@ -54,6 +54,15 @@ class FakeDispatcher:
     def available_tools(self):
         return ("get_memory_usage", "get_disk_usage")
 
+    def tool_descriptions(self):
+        return {
+            name: {
+                "description": f"Test tool: {name}",
+                "arguments": {},
+            }
+            for name in self.available_tools()
+        }
+
     def execute(self, tool_name):
         self.calls.append(tool_name)
 
@@ -139,7 +148,6 @@ class TestReasoningAgent(unittest.TestCase):
 
         self.assertEqual(dispatcher.calls, [])
 
-
     def test_tool_call_limit(self):
         agent, client, dispatcher = self.make_agent(
             [
@@ -222,6 +230,135 @@ class TestReasoningAgent(unittest.TestCase):
             any(
                 "Tool execution result:" in message["content"]
                 and '"get_memory_usage"' in message["content"]
+                for message in second_call_messages
+            )
+        )
+
+    def test_tool_descriptions_provided_to_model(self):
+        agent, client, dispatcher = self.make_agent(
+            [
+                finish_decision("No diagnostics required."),
+            ]
+        )
+
+        agent.run(
+            "Explain system resources.",
+            "Use diagnostics when necessary.",
+        )
+
+        first_call_messages = client.calls[0]["messages"]
+
+        user_message = next(
+            message["content"]
+            for message in first_call_messages
+            if message["role"] == "user"
+        )
+
+        descriptions = dispatcher.tool_descriptions()
+
+        self.assertIn(
+            "Available tools and argument requirements:",
+            user_message,
+        )
+
+        for name, definition in descriptions.items():
+            self.assertIn(name, user_message)
+            self.assertIn(definition["description"], user_message)
+
+    def test_recovers_from_invalid_tool_arguments(self):
+        class ReferenceDispatcher:
+            def __init__(self):
+                self.calls = []
+
+            def available_tools(self):
+                return ("read_reference",)
+
+            def execute(self, tool_name, **arguments):
+                self.calls.append((tool_name, arguments))
+
+                if set(arguments) != {"filename"}:
+                    raise ValueError(
+                        "read_reference requires exactly one argument: filename"
+                    )
+
+                return {
+                    "tool": tool_name,
+                    "result": "PSI measures resource contention.",
+                }
+
+            def tool_descriptions(self):
+                return {
+                    "read_reference": {
+                        "description": "Read a reference document.",
+                        "arguments": {
+                            "filename": "Required reference filename.",
+                        },
+                    },
+                }
+
+        client = FakeClient(
+            [
+                json.dumps(
+                    {
+                        "action": "tool",
+                        "tool": "read_reference",
+                        "answer": None,
+                        "arguments": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "action": "tool",
+                        "tool": "read_reference",
+                        "answer": None,
+                        "arguments": {
+                            "filename": "pressure-stall-information.md",
+                        },
+                    }
+                ),
+                finish_decision("Reference successfully retrieved."),
+            ]
+        )
+
+        dispatcher = ReferenceDispatcher()
+
+        agent = ReasoningAgent(
+            client=client,
+            dispatcher=dispatcher,
+            max_tool_calls=3,
+        )
+
+        result = agent.run(
+            "Investigate Linux PSI.",
+            "Use available reference knowledge.",
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.tool_calls, 2)
+        self.assertEqual(len(result.observations), 2)
+
+        self.assertIn("error", result.observations[0])
+        self.assertEqual(
+            result.observations[1]["result"],
+            "PSI measures resource contention.",
+        )
+
+        self.assertEqual(
+            dispatcher.calls,
+            [
+                ("read_reference", {}),
+                (
+                    "read_reference",
+                    {"filename": "pressure-stall-information.md"},
+                ),
+            ],
+        )
+
+        second_call_messages = client.calls[1]["messages"]
+
+        self.assertTrue(
+            any(
+                "requires exactly one argument" in message["content"]
                 for message in second_call_messages
             )
         )

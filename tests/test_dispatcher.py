@@ -8,6 +8,7 @@ from planelocket_agent.diagnostics.models import (
     PressureSample,
     ResourcePressure,
 )
+from planelocket_agent.tools.definitions import ToolDefinition
 from planelocket_agent.tools.dispatcher import ToolDispatcher
 
 
@@ -122,7 +123,14 @@ class TestToolDispatcher(unittest.TestCase):
         def failing_memory():
             raise RuntimeError("Diagnostic collection failed")
 
-        self.dispatcher._tools["get_memory_usage"] = failing_memory
+        original = self.dispatcher._definitions["get_memory_usage"]
+
+        self.dispatcher._definitions["get_memory_usage"] = ToolDefinition(
+            name=original.name,
+            description=original.description,
+            handler=failing_memory,
+            arguments=original.arguments,
+        )
 
         with self.assertRaisesRegex(
             RuntimeError,
@@ -142,6 +150,146 @@ class TestToolDispatcher(unittest.TestCase):
         self.assertEqual(self.backend.pressure_calls, 1)
         self.assertEqual(self.backend.memory_calls, 0)
         self.assertEqual(self.backend.disk_calls, 0)
+
+    def test_tool_descriptions_match_available_tools(self):
+        descriptions = self.dispatcher.tool_descriptions()
+
+        self.assertEqual(
+            tuple(descriptions),
+            self.dispatcher.available_tools(),
+        )
+
+        self.assertEqual(
+            descriptions["get_memory_usage"]["arguments"],
+            {},
+        )
+
+        self.assertEqual(
+            descriptions["get_resource_pressure"]["arguments"],
+            {},
+        )
+
+        self.assertNotIn("read_reference", descriptions)
+
+    def test_diagnostic_tool_rejects_arguments(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "does not accept arguments",
+        ):
+            self.dispatcher.execute(
+                "get_memory_usage",
+                filename="unexpected.md",
+            )
+
+        self.assertEqual(self.backend.memory_calls, 0)
+
+    def test_diagnostic_tool_rejects_unexpected_keyword(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "does not accept arguments",
+        ):
+            self.dispatcher.execute(
+                "get_disk_usage",
+                command="whoami",
+            )
+
+        self.assertEqual(self.backend.disk_calls, 0)
+
+    def test_tool_descriptions_match_registered_definitions(self):
+        descriptions = self.dispatcher.tool_descriptions()
+
+        self.assertEqual(
+            set(descriptions),
+            set(self.dispatcher.available_tools()),
+        )
+
+        for name, definition in self.dispatcher._definitions.items():
+            self.assertEqual(
+                descriptions[name],
+                definition.model_description(),
+            )
+
+    def test_generic_tool_argument_validation(self):
+        calls = []
+
+        def example_handler(filename):
+            calls.append(filename)
+            return {"filename": filename}
+
+        definition = ToolDefinition(
+            name="example_tool",
+            description="Example tool requiring a filename.",
+            handler=example_handler,
+            arguments={
+                "filename": "Required filename.",
+            },
+        )
+
+        self.dispatcher._definitions["example_tool"] = definition
+
+        invalid_arguments = (
+            {},
+            {"filename": ""},
+            {"filename": 123},
+            {"filename": "example.md", "unexpected": True},
+        )
+
+        for arguments in invalid_arguments:
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaises(ValueError),
+            ):
+                self.dispatcher.execute(
+                    "example_tool",
+                    **arguments,
+                )
+
+        self.assertEqual(calls, [])
+
+        result = self.dispatcher.execute(
+            "example_tool",
+            filename="example.md",
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "tool": "example_tool",
+                "result": {"filename": "example.md"},
+            },
+        )
+
+        self.assertEqual(calls, ["example.md"])
+
+    def test_registered_tool_available_through_all_interfaces(self):
+        def example_handler():
+            return {"status": "ok"}
+
+        definition = ToolDefinition(
+            name="example_tool",
+            description="Return an example result.",
+            handler=example_handler,
+        )
+
+        self.dispatcher._definitions["example_tool"] = definition
+
+        self.assertIn(
+            "example_tool",
+            self.dispatcher.available_tools(),
+        )
+
+        self.assertEqual(
+            self.dispatcher.tool_descriptions()["example_tool"],
+            definition.model_description(),
+        )
+
+        self.assertEqual(
+            self.dispatcher.execute("example_tool"),
+            {
+                "tool": "example_tool",
+                "result": {"status": "ok"},
+            },
+        )
 
 
 if __name__ == "__main__":

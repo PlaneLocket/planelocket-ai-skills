@@ -4,6 +4,8 @@ from pathlib import Path
 
 from planelocket_agent.loader import SkillLoader
 from planelocket_agent.registry import Skill
+from planelocket_agent.tools.dispatcher import ToolDispatcher
+from planelocket_agent.tools.knowledge import KnowledgeProvider
 
 
 class TestSkillReferences(unittest.TestCase):
@@ -75,6 +77,51 @@ class TestSkillReferences(unittest.TestCase):
                 self.skill,
                 "secret-link.md",
             )
+
+    def test_reference_retrieval_through_dispatcher(self):
+        (self.references_dir / "psi.md").write_text(
+            "PSI measures resource contention, not utilization.",
+            encoding="utf-8",
+        )
+
+        class FakeBackend:
+            def get_memory_usage(self):
+                return {}
+
+            def get_disk_usage(self):
+                return {}
+
+            def get_resource_pressure(self):
+                return {}
+
+        knowledge = KnowledgeProvider(self.skill, self.loader)
+
+        dispatcher = ToolDispatcher(
+            backend=FakeBackend(),
+            knowledge=knowledge,
+        )
+
+        listing = dispatcher.execute("list_references")
+
+        self.assertEqual(
+            listing["result"],
+            ("psi.md",),
+        )
+
+        reference = dispatcher.execute(
+            "read_reference",
+            filename="psi.md",
+        )
+
+        self.assertEqual(
+            reference["tool"],
+            "read_reference",
+        )
+
+        self.assertEqual(
+            reference["result"],
+            "PSI measures resource contention, not utilization.",
+        )
 
     def test_missing_references_directory(self):
         empty_skill_dir = self.root / "empty-skill"

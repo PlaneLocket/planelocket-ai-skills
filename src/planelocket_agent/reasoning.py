@@ -45,34 +45,7 @@ class ReasoningAgent:
 
         allowed_tools = self._dispatcher.available_tools()
 
-        tool_descriptions = {
-            "get_memory_usage": {
-                "description": "Measure current system memory and swap capacity.",
-                "arguments": {},
-            },
-            "get_disk_usage": {
-                "description": "Measure filesystem storage capacity.",
-                "arguments": {},
-            },
-            "get_resource_pressure": {
-                "description": "Measure Linux CPU, memory, and I/O pressure stall information.",
-                "arguments": {},
-            },
-            "list_references": {
-                "description": "List knowledge reference documents available for the selected Skill.",
-                "arguments": {},
-            },
-            "read_reference": {
-                "description": "Read a knowledge reference document for the selected Skill.",
-                "arguments": {
-                    "filename": "Required string. Must be a filename returned by list_references."
-                },
-            },
-        }
-
-        available_tool_descriptions = {
-            name: tool_descriptions[name] for name in allowed_tools
-        }
+        available_tool_descriptions = self._dispatcher.tool_descriptions()
 
         schema = {
             "type": "object",
