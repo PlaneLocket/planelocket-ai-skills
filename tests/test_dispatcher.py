@@ -80,6 +80,16 @@ class TestToolDispatcher(unittest.TestCase):
                 "get_memory_usage",
                 "get_disk_usage",
                 "get_resource_pressure",
+                "search_movies",
+                "search_people",
+                "get_person_movies",
+                "search_series",
+                "get_seasons",
+                "get_episodes",
+                "search_artists",
+                "get_artist_tracks",
+                "get_artist_albums",
+                "get_album_tracks",
             ),
         )
 
@@ -260,6 +270,7 @@ class TestToolDispatcher(unittest.TestCase):
             result,
             {
                 "tool": "example_tool",
+                "arguments": {"filename": "example.md"},
                 "result": {"filename": "example.md"},
             },
         )
@@ -292,6 +303,7 @@ class TestToolDispatcher(unittest.TestCase):
             self.dispatcher.execute("example_tool"),
             {
                 "tool": "example_tool",
+                "arguments": {},
                 "result": {"status": "ok"},
             },
         )
@@ -537,3 +549,4 @@ class TestToolDispatcher(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

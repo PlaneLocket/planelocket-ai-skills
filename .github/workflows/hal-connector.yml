@@ -1,0 +1,38 @@
+name: HAL connector
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: homeassistant/requirements-test.txt
+      - name: Install isolated development dependencies
+        run: |
+          python -m pip install -e . -r homeassistant/requirements-test.txt
+      - name: Backend regression tests
+        run: PYTHONPATH=src python -m unittest discover -s tests -q
+      - name: Home Assistant connector tests
+        run: python -m pytest -c homeassistant/pytest.ini homeassistant/tests -q
+      - name: Connector lint
+        run: |
+          ruff check --config homeassistant/ruff.toml homeassistant
+          ruff format --check --config homeassistant/ruff.toml homeassistant
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage custom integration at repository root for hassfest discovery
+        run: mv homeassistant/custom_components custom_components
+      - uses: home-assistant/actions/hassfest@master
