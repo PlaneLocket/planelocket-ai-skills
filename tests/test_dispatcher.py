@@ -90,6 +90,8 @@ class TestToolDispatcher(unittest.TestCase):
                 "get_artist_tracks",
                 "get_artist_albums",
                 "get_album_tracks",
+                "search_inventory_parts",
+                "get_inventory_stock",
             ),
         )
 
@@ -549,4 +551,3 @@ class TestToolDispatcher(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

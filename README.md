@@ -1,8 +1,15 @@
 # PlaneLocket AI
 
-A self-hosted, Skill-aware Python agent for evidence-driven system diagnostics. PlaneLocket AI selects task-specific Skills, gathers observations through an explicit allowlist of tools, and asks a language model to reason from the evidence.
+A self-hosted, Skill-aware Python agent for the PlaneLocket household.
 
-**Status:** Experimental, under active development. The current implementation targets read-only Linux diagnostics and a local Ollama model. It is not a general-purpose shell-executing agent.
+PlaneLocket AI uses a local Ollama model to answer questions and investigate
+household systems through explicitly authorized tools. Current capabilities
+include Linux diagnostics, Emby media library searches, and read-only
+InvenTree inventory queries.
+
+The agent uses a centralized HTTP API, a bounded reasoning loop, and a
+tool dispatcher that validates every requested operation. Skills provide
+task-specific guidance without granting additional execution permissions.
 
 ## Design principles
 
@@ -21,6 +28,13 @@ A self-hosted, Skill-aware Python agent for evidence-driven system diagnostics. 
 - Discover and securely read reference documents belonging to the selected Skill.
 - Validate model-generated tool decisions and tool arguments.
 - Return recoverable tool-argument errors to the model for possible correction.
+- Search the household Emby library for movies, television series,
+  episodes, artists, albums, and tracks.
+- Find movies associated with actors using Emby person records.
+- Search the household InvenTree parts catalog by name or model number.
+- Retrieve InvenTree stock quantities, allocations, and storage locations.
+- Expose investigations through a bearer-authenticated FastAPI endpoint.
+- Record application events using centralized Python logging.
 
 The available diagnostic tools are:
 
@@ -110,27 +124,36 @@ Reference access is scoped to the selected Skill. The loader validates reference
 ## Architecture
 
 ```text
-User request
+User / HAL
     |
     v
-SkillRegistry -> SkillSelector -> SkillLoader
-                                  |
-                       Skill instructions + reference index
-                                  |
-                                  v
-                           ReasoningAgent <-> Model client
-                                  |
-                           validated decision
-                                  |
-                                  v
-                           ToolDispatcher
-                            /         \
-                  LinuxDiagnostics  KnowledgeProvider
-                            \         /
-                             observation
-                                  |
-                                  v
-                           ReasoningAgent
+FastAPI (/investigate)
+    |
+    v
+PlaneLocketAgent
+    |
+    +--> SkillRegistry --> SkillSelector --> SkillLoader
+    |                                           |
+    |                                    Skill instructions
+    |                                           |
+    v                                           v
+ReasoningAgent <-------------------------- OllamaClient
+    |
+    | Structured tool decision
+    v
+ToolDispatcher
+    |
+    +--> LinuxDiagnostics
+    +--> Emby integration
+    +--> InvenTree integration
+    +--> KnowledgeProvider
+    +--> MemoryRecorder (when configured)
+    |
+    v
+Validated tool result
+    |
+    v
+ReasoningAgent --> OllamaClient --> Final answer
 ```
 
 Key implementation modules:
@@ -144,19 +167,105 @@ Key implementation modules:
 - `diagnostics/linux/`: Linux diagnostic implementation.
 - `ollama.py`: current model client.
 
+## InvenTree integration verification
+
+Verified on Kvasir, 2026-10-29.
+
+### Implementation
+
+- `skills/inventree-inventory/SKILL.md` provides inventory guidance.
+- `integrations/inventree.py` implements authenticated, read-only API access.
+- `ToolDispatcher` registers two inventory tools:
+  - `search_inventory_parts(query: str)`
+  - `get_inventory_stock(part_id: int)`
+- Credentials are supplied through environment variables.
+- Pagination and redirect handling include validation and loop protection.
+
+### Live verification
+
+An investigation for `SN74AHCT125N` returned:
+
+- Two matching InvenTree parts.
+- Available quantities of 5 and 10, totaling 15.
+- Zero allocated units.
+- Location: `Workshop/Electronics Bench/Component Bins`.
+
+The agent completed the investigation using three tool calls:
+
+1. `search_inventory_parts`
+2. `get_inventory_stock`
+3. `get_inventory_stock`
+
+The existing FastAPI `/investigate` endpoint was also tested
+successfully with bearer authentication.
+
+### Automated tests
+
+The complete test suite passed:
+
+- 156 tests passed.
+- 8 subtests passed.
+
+These results describe the verified state on 2026-10-29,
+not a guarantee about future inventory quantities or deployments.
+
 ## Known limitations and next steps
 
 - **Reference use is not yet reliable.** In live tests, Qwen discovered references but did not consistently call `read_reference`; successful retrieval and improved interpretation still need verification.
 - **PSI interpretation needs scrutiny.** Live model assessments have sometimes confused pressure with utilization or overlooked historical cumulative stalls.
-- **Regression coverage is incomplete.** Automated tests for malformed-argument recovery and the complete knowledge-retrieval flow are planned.
-- **Tool descriptions are currently embedded in the reasoning loop.** They should move into tool registrations with explicit argument contracts.
+- **Regression coverage requires continued maintenance.** The test suite
+  passed 156 tests and 8 subtests on 2026-10-29. Future integrations
+  should include focused tests for new behavior and failure conditions.
 - **Knowledge binding currently rebuilds a dispatcher using its private backend attribute.** This is a temporary integration that should be replaced with clean provider composition.
 - **Persistent memory is not implemented.** A future phase will explore controlled storage and retrieval of facts and investigation history.
 - **The current tool set is read-only and Linux-focused.** It does not provide arbitrary shell execution or remote host management.
 
 ## Development workflow
 
-Make small, testable changes; run the unit suite; validate model behavior separately; review diffs before committing. Live-model experiments are useful evidence, but deterministic regression tests are required to protect important behavior.
+### Development environment
+
+- Primary development host: Kvasir.
+- IDE: VS Code using Remote SSH.
+- Repository: `/home/looper/projects/planelocket-ai-skills`.
+- Python virtual environment: `.venv`.
+- Local inference: Ollama using the attached NVIDIA RTX 3060.
+- Source control: GitHub feature branches and pull requests.
+
+### Working practices
+
+This project is developed collaboratively, with the operator learning
+Python while implementing the system.
+
+- Explain Python concepts, architectural decisions, and tradeoffs.
+- The operator writes and edits code in VS Code.
+- Use the VS Code integrated terminal when commands are necessary.
+- Give one meaningful implementation step at a time.
+- Inspect existing code before recommending changes.
+- Reuse existing architecture rather than introducing duplicate services.
+- Prefer focused changes that deliver working functionality.
+- Write tests for meaningful behavior and regression protection.
+- Avoid redundant tests and repeated verification of established behavior.
+- Validate integrations against live services when appropriate.
+- Review changes before committing.
+- Submit changes through pull requests rather than directly to main.
+
+### Session continuity
+
+Before proposing architectural changes, review this README and the
+relevant existing implementation.
+
+Do not assume previously discussed infrastructure details are current.
+Consult repository documentation and configuration.
+
+At the end of a development session, record:
+
+1. Completed functionality and verification results.
+2. Important architectural decisions.
+3. Outstanding problems and limitations.
+4. The next implementation milestone.
+
+Do not repeat completed discovery or verification work without a
+specific technical reason.
 
 
 ## HAL household knowledge integration
