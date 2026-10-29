@@ -60,7 +60,7 @@ class PlaneLocketAPI(llm.API):
 class AskHouseholdTool(llm.Tool):
     """Forward one read-only question to the existing backend."""
 
-    name = "planelocket_ai__ask_household"
+    name = "ask_household"
     title = "Ask PlaneLocket AI"
     integration = DOMAIN
     description = (
