@@ -11,10 +11,12 @@ from pydantic import BaseModel
 from planelocket_agent.agent import PlaneLocketAgent
 from planelocket_agent.config import load_config
 from planelocket_agent.diagnostics.linux.backend import LinuxDiagnostics
+from planelocket_agent.logging_config import configure_logging
 from planelocket_agent.ollama import OllamaClient
 from planelocket_agent.tools.dispatcher import ToolDispatcher
 
 load_config()
+configure_logging()
 
 app = FastAPI(
     title="PlaneLocket AI",

@@ -11,12 +11,16 @@ from planelocket_agent.integrations.emby import (
     get_artist_albums,
     get_artist_tracks,
     get_episodes,
+    get_person_movies,
     get_seasons,
     search_artists,
     search_movies,
-    search_series,
-    get_person_movies,
     search_people,
+    search_series,
+)
+from planelocket_agent.integrations.inventree import (
+    get_part_stock,
+    search_parts,
 )
 from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.tools.definitions import (
@@ -169,6 +173,33 @@ class ToolDispatcher:
                 handler=get_album_tracks,
                 arguments={
                     "album_id": "Required string. Emby music album ID.",
+                },
+            ),
+            "search_inventory_parts": ToolDefinition(
+                name="search_inventory_parts",
+                description=(
+                    "Search the InvenTree inventory catalog for parts matching "
+                    "a name, model number, or keyword. Returns matching part "
+                    "records and their IDs. Does not establish stock availability."
+                ),
+                handler=search_parts,
+                arguments={
+                    "query": "Required string. Part name, model number, or keyword.",
+                },
+            ),
+            "get_inventory_stock": ToolDefinition(
+                name="get_inventory_stock",
+                description=(
+                    "Retrieve current stock records, quantities, allocations, "
+                    "and storage locations for an InvenTree part. "
+                    "Requires a part ID obtained from search_inventory_parts."
+                ),
+                handler=get_part_stock,
+                arguments={
+                    "part_id": ToolArgument(
+                        description="InvenTree part ID returned by search_inventory_parts.",
+                        value_type=int,
+                    ),
                 },
             ),
         }
