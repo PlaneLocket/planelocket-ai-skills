@@ -295,5 +295,6 @@ class ToolDispatcher:
 
         return {
             "tool": tool_name,
+            "arguments": arguments,
             "result": result,
         }

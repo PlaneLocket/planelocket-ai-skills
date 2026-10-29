@@ -5,6 +5,8 @@ description = "PlaneLocket household AI agent"
 requires-python = ">=3.14"
 dependencies = [
     "python-dotenv>=1.2,<2",
+    "fastapi",
+    "uvicorn",
 ]
 
 [build-system]
