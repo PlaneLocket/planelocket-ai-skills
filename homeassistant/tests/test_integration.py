@@ -3,10 +3,11 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from custom_components.planelocket_ai.client import PlaneLocketError, bounded_result
-from custom_components.planelocket_ai.const import DOMAIN
 from homeassistant.core import Context
 from homeassistant.helpers import llm
+
+from custom_components.planelocket_ai.client import PlaneLocketError, bounded_result
+from custom_components.planelocket_ai.const import DOMAIN
 
 
 @pytest.fixture
@@ -106,6 +107,12 @@ async def test_acceptance_evidence_through_registered_api(hass, entry, context, 
         )
     assert not result.error
     assert result.data["observations"] == evidence["observations"]
+
+    # Check the native Ollama adapter can format the connector's actual schema.
+    from homeassistant.components.ollama.entity import _format_tool
+
+    spec = _format_tool(api.tools[0], api.custom_serializer)
+    assert spec["function"]["parameters"]["properties"]["question"]["type"] == "string"
     ask.assert_awaited_once_with("What movies starring Harrison Ford do we have?")
 
 

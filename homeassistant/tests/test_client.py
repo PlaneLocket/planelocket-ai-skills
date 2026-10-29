@@ -8,6 +8,7 @@ from unittest.mock import patch
 import aiohttp
 import pytest
 from aiohttp import web
+
 from custom_components.planelocket_ai import client as client_module
 from custom_components.planelocket_ai.client import (
     PlaneLocketClient,
@@ -242,3 +243,28 @@ def test_reject_nonfinite_observation(evidence):
     evidence["observations"] = [{"result": float("nan")}]
     with pytest.raises(PlaneLocketError, match="^invalid_response$"):
         bounded_result(evidence, TOKEN)
+
+
+@pytest.mark.parametrize("location", ["tool_calls", "observation", "deep_observation"])
+def test_reject_values_ha_cannot_serialize(evidence, location):
+    if location == "tool_calls":
+        evidence["tool_calls"] = 2**80
+    elif location == "observation":
+        evidence["observations"] = [{"value": 2**80}]
+    else:
+        nested = {}
+        for _ in range(40):
+            nested = {"nested": nested}
+        evidence["observations"] = [nested]
+    with pytest.raises(PlaneLocketError, match="^invalid_response$"):
+        bounded_result(evidence, TOKEN)
+
+
+def test_incomplete_unicode_result_is_serializable_and_bounded(evidence):
+    from homeassistant.helpers.json import json_dumps
+
+    evidence["completed"] = False
+    evidence["answer"] = "🎬" * 10000
+    result = bounded_result(evidence, TOKEN)
+    assert len(json_dumps(result).encode()) <= MAX_TOOL_RESULT_BYTES
+    assert "error" in result

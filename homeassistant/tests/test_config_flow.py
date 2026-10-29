@@ -3,10 +3,11 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from custom_components.planelocket_ai.client import PlaneLocketError
-from custom_components.planelocket_ai.const import DOMAIN
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
+
+from custom_components.planelocket_ai.client import PlaneLocketError
+from custom_components.planelocket_ai.const import DOMAIN
 
 INPUT = {"url": "https://ai.example.test/", "token": "test-only-credential"}
 HEALTH = "custom_components.planelocket_ai.client.PlaneLocketClient.async_health"

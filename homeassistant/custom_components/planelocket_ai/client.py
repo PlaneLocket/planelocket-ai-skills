@@ -71,15 +71,19 @@ def _json_size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
 
-def _safe_json(value: Any, token: str) -> Any:
+def _safe_json(value: Any, token: str, depth: int = 0) -> Any:
     """Redact an echoed credential and reject non-finite/deep remote JSON."""
+    # HA serializes tool results with orjson, which has bounded depth/integers.
+    if depth > 32 or (type(value) is int and not -(2**63) <= value < 2**63):
+        raise PlaneLocketError("invalid_response")
     if isinstance(value, str):
         return value.replace(token, "[REDACTED]")
     if isinstance(value, list):
-        return [_safe_json(item, token) for item in value]
+        return [_safe_json(item, token, depth + 1) for item in value]
     if isinstance(value, dict):
         return {
-            key.replace(token, "[REDACTED]"): _safe_json(item, token) for key, item in value.items()
+            key.replace(token, "[REDACTED]"): _safe_json(item, token, depth + 1)
+            for key, item in value.items()
         }
     if isinstance(value, float) and not math.isfinite(value):
         raise PlaneLocketError("invalid_response")
@@ -94,7 +98,7 @@ def bounded_result(payload: Any, token: str) -> dict[str, Any]:
         or not payload["answer"].strip()
         or type(payload.get("completed")) is not bool
         or type(payload.get("tool_calls")) is not int
-        or payload["tool_calls"] < 0
+        or not 0 <= payload["tool_calls"] < 2**63
         or not isinstance(payload.get("observations"), list)
         or any(not isinstance(item, dict) for item in payload["observations"])
     ):
