@@ -15,6 +15,13 @@ in their household Emby media library.
 - `search_movies`: Search the Emby library for candidate movie titles.
   - Requires `title`.
 
+- `search_people`: Search Emby for people by name, including actors.
+  - Requires `name`.
+  - Returns candidate people and their Emby person IDs.
+
+- `get_person_movies`: List movies associated with an Emby person.
+  - Requires `person_id` obtained from `search_people`.
+
 - `search_series`: Search the Emby library for candidate television series.
   - Requires `title`.
 
@@ -23,6 +30,28 @@ in their household Emby media library.
 
 - `get_episodes`: List available episodes in a specific season.
   - Requires `series_id` and `season_id` obtained from previous tool results.
+
+## Actor lookup workflow
+
+To find movies featuring a particular actor:
+
+1. Call `search_people` using the actor's name.
+2. Identify the correct person from the returned candidates.
+3. Call `get_person_movies` using that person's Emby ID.
+4. Report the movies associated with that person in the library.
+
+Emby's people search may return fuzzy matches. Do not assume
+that every returned person is the requested actor.
+
+Use person IDs from Emby results rather than guessing movie titles
+from general knowledge.
+
+Movies returned by `get_person_movies` are associated with the
+selected person in Emby's metadata. This does not independently
+establish the person's specific credited role.
+
+If the user requests movies featuring an actor, prefer this workflow
+over searching movie titles.
 
 ## Television lookup workflow
 

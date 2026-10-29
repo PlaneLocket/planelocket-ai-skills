@@ -200,3 +200,68 @@ def get_album_tracks(album_id: str) -> list[dict]:
         }
         for track in data.get("Items", [])
     ]
+
+
+def search_people(name: str) -> list[dict]:
+    """Search Emby for people matching a name."""
+    data = _emby_get(
+        "Persons",
+        {
+            "SearchTerm": name,
+            "Limit": 25,
+        },
+    )
+
+    return [
+        {
+            "name": person.get("Name"),
+            "id": person.get("Id"),
+        }
+        for person in data.get("Items", [])
+    ]
+
+
+def get_person_movies(person_id: str) -> list[dict]:
+    """Return all library movies associated with an Emby person."""
+    movies = []
+    start_index = 0
+    page_size = 100
+
+    while True:
+        data = _emby_get(
+            "Items",
+            {
+                "PersonIds": person_id,
+                "IncludeItemTypes": "Movie",
+                "Recursive": "true",
+                "Fields": "ProductionYear",
+                "StartIndex": start_index,
+                "Limit": page_size,
+            },
+        )
+
+        items = data.get("Items", [])
+
+        movies.extend(
+            {
+                "name": movie.get("Name"),
+                "year": movie.get("ProductionYear"),
+                "id": movie.get("Id"),
+            }
+            for movie in items
+        )
+
+        start_index += len(items)
+
+        if not items:
+            break
+
+        total = data.get("TotalRecordCount")
+
+        if total is not None and start_index >= total:
+            break
+
+        if total is None and len(items) < page_size:
+            break
+
+    return movies

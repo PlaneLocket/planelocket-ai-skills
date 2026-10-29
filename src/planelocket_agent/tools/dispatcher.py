@@ -15,6 +15,8 @@ from planelocket_agent.integrations.emby import (
     search_artists,
     search_movies,
     search_series,
+    get_person_movies,
+    search_people,
 )
 from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.tools.definitions import (
@@ -62,6 +64,31 @@ class ToolDispatcher:
                 handler=search_movies,
                 arguments={
                     "title": "Required string. Movie title or search phrase.",
+                },
+            ),
+            "search_people": ToolDefinition(
+                name="search_people",
+                description=(
+                    "Search Emby for people by name, including actors. "
+                    "Returns matching names and Emby person IDs. "
+                    "Results may include fuzzy matches."
+                ),
+                handler=search_people,
+                arguments={
+                    "name": "Required string. Person or actor name.",
+                },
+            ),
+            "get_person_movies": ToolDefinition(
+                name="get_person_movies",
+                description=(
+                    "List movies in the Emby library associated with a person. "
+                    "Requires a person ID obtained from search_people. "
+                    "Results establish a person association in Emby metadata, "
+                    "but do not independently verify the person's credited role."
+                ),
+                handler=get_person_movies,
+                arguments={
+                    "person_id": "Required string. Emby person ID.",
                 },
             ),
             "search_series": ToolDefinition(
