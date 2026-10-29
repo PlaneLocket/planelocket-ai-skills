@@ -4,7 +4,7 @@
 
 This custom Home Assistant integration exposes the existing PlaneLocket AI API to
 HAL, the native Ollama conversation agent. It registers a separate **PlaneLocket AI**
-LLM API with one read-only tool, `planelocket_ai__ask_household(question)`. Select it
+LLM API with one read-only tool, `ask_household(question)`. Select it
 **alongside Assist**, not instead of Assist. No Home Assistant core, Ollama agent,
 Emby implementation, speech recognition, or device-control changes are required.
 
@@ -26,7 +26,7 @@ a supported extension interface, not an official Home Assistant integration.
    truncation markers. It is instructed to use the evidence and disclose failures.
 
 Home Assistant namespaces tool names when APIs are merged. The model may therefore
-see a name such as `planelocket-ai__planelocket_ai__ask_household`; use the registered
+see a name such as `planelocket-ai__ask_household`; use the registered
 schema rather than hardcoding a merged name. The connector does no network I/O
 while registering the API or assembling a request's tool list. Backend downtime
 therefore does not prevent API merging or remove Assist's tools.
