@@ -112,3 +112,91 @@ def get_episodes(series_id: str, season_id: str) -> list[dict]:
         }
         for episode in data.get("Items", [])
     ]
+
+
+def get_artist_tracks(artist_id: str) -> list[dict]:
+    """Return audio tracks associated with an Emby music artist."""
+    data = _emby_get(
+        "Items",
+        {
+            "IncludeItemTypes": "Audio",
+            "ArtistIds": artist_id,
+            "Recursive": "true",
+        },
+    )
+
+    return [
+        {
+            "name": item.get("Name"),
+            "artists": item.get("Artists", []),
+            "album": item.get("Album"),
+            "id": item.get("Id"),
+        }
+        for item in data.get("Items", [])
+    ]
+
+
+def search_artists(name: str) -> list[dict]:
+    """Search the Emby music library for artists matching a name."""
+    data = _emby_get(
+        "Artists",
+        {
+            "SearchTerm": name,
+            "Fields": "SortName",
+        },
+    )
+
+    return [
+        {
+            "name": artist.get("Name"),
+            "sort_name": artist.get("SortName"),
+            "id": artist.get("Id"),
+        }
+        for artist in data.get("Items", [])
+    ]
+
+
+def get_artist_albums(artist_id: str) -> list[dict]:
+    """Return music albums associated with an Emby artist."""
+    data = _emby_get(
+        "Items",
+        {
+            "IncludeItemTypes": "MusicAlbum",
+            "ArtistIds": artist_id,
+            "Recursive": "true",
+            "Fields": "ProductionYear",
+        },
+    )
+
+    return [
+        {
+            "name": album.get("Name"),
+            "artist": album.get("AlbumArtist"),
+            "year": album.get("ProductionYear"),
+            "id": album.get("Id"),
+        }
+        for album in data.get("Items", [])
+    ]
+
+
+def get_album_tracks(album_id: str) -> list[dict]:
+    """Return audio tracks belonging to an Emby music album."""
+    data = _emby_get(
+        "Items",
+        {
+            "IncludeItemTypes": "Audio",
+            "ParentId": album_id,
+            "Recursive": "true",
+        },
+    )
+
+    return [
+        {
+            "name": track.get("Name"),
+            "artists": track.get("Artists", []),
+            "track_number": track.get("IndexNumber"),
+            "disc_number": track.get("ParentIndexNumber"),
+            "id": track.get("Id"),
+        }
+        for track in data.get("Items", [])
+    ]

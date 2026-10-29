@@ -7,8 +7,12 @@ from planelocket_agent.diagnostics.interfaces import (
     SystemDiagnostics,
 )
 from planelocket_agent.integrations.emby import (
+    get_album_tracks,
+    get_artist_albums,
+    get_artist_tracks,
     get_episodes,
     get_seasons,
+    search_artists,
     search_movies,
     search_series,
 )
@@ -93,6 +97,51 @@ class ToolDispatcher:
                 arguments={
                     "series_id": "Required string. Emby television series ID.",
                     "season_id": "Required string. Emby season ID.",
+                },
+            ),
+            "search_artists": ToolDefinition(
+                name="search_artists",
+                description=(
+                    "Search the Emby music library for artists by name. "
+                    "Returns artist names, sorting names, and Emby artist IDs. "
+                    "Results may include partial matches."
+                ),
+                handler=search_artists,
+                arguments={
+                    "name": "Required string. Artist name or search phrase.",
+                },
+            ),
+            "get_artist_tracks": ToolDefinition(
+                name="get_artist_tracks",
+                description=(
+                    "List tracks associated with an Emby music artist. "
+                    "Requires an artist ID obtained from search_artists."
+                ),
+                handler=get_artist_tracks,
+                arguments={
+                    "artist_id": "Required string. Emby music artist ID.",
+                },
+            ),
+            "get_artist_albums": ToolDefinition(
+                name="get_artist_albums",
+                description=(
+                    "List albums associated with an Emby music artist. "
+                    "Requires an artist ID obtained from search_artists."
+                ),
+                handler=get_artist_albums,
+                arguments={
+                    "artist_id": "Required string. Emby music artist ID.",
+                },
+            ),
+            "get_album_tracks": ToolDefinition(
+                name="get_album_tracks",
+                description=(
+                    "List tracks belonging to a specific Emby music album. "
+                    "Requires an album ID obtained from get_artist_albums."
+                ),
+                handler=get_album_tracks,
+                arguments={
+                    "album_id": "Required string. Emby music album ID.",
                 },
             ),
         }

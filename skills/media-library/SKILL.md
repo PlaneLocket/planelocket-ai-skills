@@ -1,6 +1,6 @@
 ---
 name: media-library
-description: Answer questions about movies and television shows available in the household media library.
+description: Answer questions about movies, television shows, and music available in the household Emby media library.
 ---
 
 # Media Library
@@ -67,3 +67,46 @@ If no matching title, season, or episode is found, explain what
 could not be found in the library.
 
 Base availability claims on actual Emby results.
+
+## Music library
+
+Use these tools to answer questions about music available in Emby.
+
+### Available tools
+
+- `search_artists(name)`: Search for music artists by name. Returns artist names, sorting names, and Emby artist IDs.
+- `get_artist_tracks(artist_id)`: List tracks associated with an artist.
+- `get_artist_albums(artist_id)`: List albums associated with an artist.
+- `get_album_tracks(album_id)`: List tracks belonging to an album.
+
+### Investigation workflow
+
+For questions about an artist's songs:
+
+1. Call `search_artists` using the requested artist name.
+2. Identify the correct artist from the results.
+3. Call `get_artist_tracks` using the returned artist ID.
+4. Report the available tracks and their albums.
+
+For questions about an artist's albums:
+
+1. Call `search_artists`.
+2. Call `get_artist_albums` using the returned artist ID.
+3. Report the available albums.
+
+For questions about tracks on a particular album:
+
+1. Call `search_artists`.
+2. Call `get_artist_albums`.
+3. Identify the requested album.
+4. Call `get_album_tracks` using its album ID.
+
+### Important rules
+
+- Never invent artist, album, or track IDs.
+- Preserve distinct album versions, even when their titles are similar.
+- Preserve separate track records, even when their titles match.
+- Different Emby track IDs establish separate library records, not necessarily different recordings or versions. 
+- Artist names may differ between Emby's artist records and track metadata.
+- Do not assume that a partial artist-name match identifies the requested artist.
+- Only report music confirmed by Emby's tool results.

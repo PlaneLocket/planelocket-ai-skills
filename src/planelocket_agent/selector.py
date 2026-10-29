@@ -35,9 +35,10 @@ class SkillSelector:
                 "role": "system",
                 "content": (
                     "You select Skills for an AI agent. "
-                    "Choose a Skill only when its description "
-                    "matches the user's request. "
-                    "If none match, choose null. "
+                    "Select the Skill whose described capabilities are most "
+                    "relevant to fulfilling the user's request. "
+                    "Interpret requests by their meaning, not exact wording. "
+                    "Select null only when no available Skill is relevant. "
                     'Return only JSON: {"skill": "name"} '
                     'or {"skill": null}. '
                     "Do not invent Skill names."
