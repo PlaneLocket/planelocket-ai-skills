@@ -1,0 +1,46 @@
+{
+  "title": "PlaneLocket AI",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect PlaneLocket AI",
+        "description": "Connect to the existing PlaneLocket AI HTTPS API. Health checks verify reachability only. The bearer token is checked by the backend on the next household question. Enter it here privately; do not paste it into logs or Git.",
+        "data": {
+          "url": "API URL",
+          "token": "Bearer token"
+        }
+      },
+      "reconfigure": {
+        "title": "Update PlaneLocket AI",
+        "description": "Connect to the existing PlaneLocket AI HTTPS API. Health checks verify reachability only. The bearer token is checked by the backend on the next household question. Enter it here privately; do not paste it into logs or Git.",
+        "data": {
+          "url": "API URL",
+          "token": "Bearer token"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Replace bearer token",
+        "description": "Connect to the existing PlaneLocket AI HTTPS API. Health checks verify reachability only. The bearer token is checked by the backend on the next household question. Enter it here privately; do not paste it into logs or Git.",
+        "data": {
+          "url": "API URL",
+          "token": "Bearer token"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Use an HTTPS origin without credentials, path, query or fragment.",
+      "invalid_token": "Enter a nonempty bearer token without whitespace.",
+      "invalid_auth": "The endpoint rejected access. Check the gateway policy.",
+      "cannot_connect": "Cannot connect. Check DNS, certificate trust and network access.",
+      "timeout": "The health check timed out.",
+      "service_unavailable": "The API is unavailable or redirected the request.",
+      "invalid_response": "The endpoint did not return the expected JSON health response.",
+      "response_too_large": "The health response exceeded the size limit."
+    },
+    "abort": {
+      "single_instance_allowed": "Only one PlaneLocket AI connector is supported. Reconfigure the existing entry.",
+      "reauth_successful": "Credential saved. It will be checked on the next household lookup.",
+      "reconfigure_successful": "Configuration updated."
+    }
+  }
+}

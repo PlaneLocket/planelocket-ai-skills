@@ -157,3 +157,13 @@ Key implementation modules:
 ## Development workflow
 
 Make small, testable changes; run the unit suite; validate model behavior separately; review diffs before committing. Live-model experiments are useful evidence, but deterministic regression tests are required to protect important behavior.
+
+
+## HAL household knowledge integration
+
+The [Home Assistant connector](homeassistant/README.md) adds one read-only household
+question tool to the existing native Ollama conversation agent through HA's LLM API
+extension mechanism. Source, tests and HA-only dependencies are isolated under
+`homeassistant/`; the backend and Emby implementation remain independent of HA.
+Production installation and voice/end-to-end acceptance on Frigg are separate
+operator tasks and have not been performed by this change.

@@ -1,0 +1,17 @@
+{
+  "answer": "The synthetic test library has The Fugitive (1993) associated with Harrison Ford.",
+  "completed": true,
+  "tool_calls": 2,
+  "observations": [
+    {
+      "tool": "search_people",
+      "arguments": {"name": "Harrison Ford"},
+      "result": [{"name": "Harrison Ford", "id": "fixture-person-1"}]
+    },
+    {
+      "tool": "get_person_movies",
+      "arguments": {"person_id": "fixture-person-1"},
+      "result": [{"name": "The Fugitive", "year": 1993, "id": "fixture-movie-1"}]
+    }
+  ]
+}

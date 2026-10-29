@@ -173,6 +173,7 @@ class TestPlaneLocketAgent(unittest.TestCase):
             result.observations[0],
             {
                 "tool": "custom_tool",
+                "arguments": {},
                 "result": {"status": "available"},
             },
         )
@@ -621,3 +622,4 @@ class TestPlaneLocketAgent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
