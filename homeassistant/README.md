@@ -32,9 +32,16 @@ while registering the API or assembling a request's tool list. Backend downtime
 therefore does not prevent API merging or remove Assist's tools.
 
 **No backend HA dependency is added.** Source and tests are isolated under this
-folder. Future backend Paperless, InvenTree, Cookbook and other read-only providers
-can use the same connector and HTTP contract. Listing these here does not mean
-those capabilities are currently available.
+folder. The connector describes a stable read-only household lookup role, not a
+catalog of backend skills or providers. The backend owns skill selection and
+source support. Adding a read-only backend skill that uses the existing HTTP
+contract does not require changing the connector prompt, tool description or
+HAL's custom instructions. This does not imply that every source is supported:
+HAL must use the returned evidence and disclose unsupported or failed lookups.
+
+Keep provider-specific query guidance in backend skills. Connector instructions
+retain only the shared evidence, partial-result and read-only boundaries; native
+Assist continues to own device states and commands.
 
 ## Installation and configuration
 
