@@ -13,5 +13,6 @@
       "arguments": {"person_id": "fixture-person-1"},
       "result": [{"name": "The Fugitive", "year": 1993, "id": "fixture-movie-1"}]
     }
-  ]
+  ],
+  "control": {"version": 1, "outcome": "completed", "next_action": "respond", "partial": false}
 }

@@ -8,6 +8,8 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
@@ -34,6 +36,7 @@ from planelocket_agent.integrations.seerr_workflow import (
 )
 from planelocket_agent.logging_config import configure_logging
 from planelocket_agent.ollama import OllamaClient
+from planelocket_agent.result_contract import acquisition_response, controlled
 from planelocket_agent.tools.dispatcher import ToolDispatcher
 
 load_config()
@@ -49,6 +52,50 @@ app = FastAPI(
     description="Self-hosted AI agent for the PlaneLocket household.",
     version="0.1.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_arguments(_request, exc):
+    details = "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'] if part != 'body')}: {error['msg']}"
+        for error in exc.errors()[:5]
+    )
+    return JSONResponse(
+        status_code=422,
+        content=controlled(
+            {
+                "answer": ("Invalid arguments. " + details)[:1500],
+                "completed": False,
+                "tool_calls": 0,
+                "observations": [],
+                "detail": [
+                    {key: error[key] for key in ("type", "loc", "msg")}
+                    for error in exc.errors()[:5]
+                ],
+            },
+            outcome="blocked",
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def rejected_request(_request, exc):
+    answer = exc.detail if isinstance(exc.detail, str) else "The request was rejected."
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=exc.headers,
+        content=controlled(
+            {
+                "answer": answer,
+                "completed": False,
+                "tool_calls": 0,
+                "observations": [],
+                "detail": exc.detail,
+            },
+            outcome="blocked",
+        ),
+    )
+
 
 bearer_scheme = HTTPBearer()
 
@@ -162,7 +209,12 @@ def acquisition_result(outcome: dict) -> dict:
     """Describe workflow evidence without letting a model invent submission."""
     inspection = outcome["inspection"]
     candidates = inspection.get("candidates", [])
-    if outcome.get("continuation_id"):
+    if (
+        "submitted" in outcome.get("submission", {})
+        and outcome["submission"]["submitted"] is None
+    ):
+        answer = "Movie request outcome is uncertain. Check Seerr before retrying."
+    elif outcome.get("continuation_id"):
         choices = ", ".join(
             f"{item['title']} ({item.get('year') or 'unknown year'} movie)"
             for item in candidates
@@ -191,17 +243,19 @@ def acquisition_result(outcome: dict) -> dict:
             or "not requestable"
         )
         answer = f"{identity}: {reasons.get(reason, reason)}. No request was submitted."
-    return {
-        "answer": answer,
-        "completed": True,
-        "tool_calls": 0,
-        "observations": [outcome],
-        "continuation_id": outcome.get("continuation_id"),
-    }
+    return acquisition_response(
+        {
+            "answer": answer,
+            "completed": True,
+            "tool_calls": 0,
+            "observations": [outcome],
+            "continuation_id": outcome.get("continuation_id"),
+        },
+        outcome,
+    )
 
 
-@app.post("/investigate", dependencies=[Depends(require_api_token)])
-def investigate(request: InvestigationRequest) -> dict:
+def _investigate(request: InvestigationRequest) -> dict:
     """Investigate a question using the PlaneLocket AI agent."""
 
     if request.continuation_id is not None and request.intent == "investigate":
@@ -237,12 +291,15 @@ def investigate(request: InvestigationRequest) -> dict:
                     storage=seerr_storage,
                 )
             else:
-                return {
-                    "answer": "Provide the TV series title. No request was submitted.",
-                    "completed": True,
-                    "tool_calls": 0,
-                    "observations": [],
-                }
+                return controlled(
+                    {
+                        "answer": "Provide the TV series title. No request was submitted.",
+                        "completed": True,
+                        "tool_calls": 0,
+                        "observations": [],
+                    },
+                    outcome="clarification_required",
+                )
         except TVContinuationError:
             raise HTTPException(
                 status_code=400, detail="Invalid, expired or consumed TV continuation"
@@ -339,12 +396,15 @@ def investigate(request: InvestigationRequest) -> dict:
             )
             title = match[1].strip().strip('"') if match else None
         if not title:
-            return {
-                "answer": "Which movie title would you like to acquire? No request was submitted.",
-                "completed": True,
-                "tool_calls": 0,
-                "observations": [],
-            }
+            return controlled(
+                {
+                    "answer": "Which movie title would you like to acquire? No request was submitted.",
+                    "completed": True,
+                    "tool_calls": 0,
+                    "observations": [],
+                },
+                outcome="clarification_required",
+            )
         return acquisition_result(
             prepare_movie_request(title=title, year=request.year, storage=seerr_storage)
         )
@@ -371,19 +431,24 @@ def investigate(request: InvestigationRequest) -> dict:
             "observations": [],
         }
 
-    continuation_ids = [
-        observation.get("result", {}).get("continuation_id")
-        for observation in result.observations
-        if isinstance(observation, dict) and isinstance(observation.get("result"), dict)
-    ]
+    # Source observations are evidence, not authority to create interaction state.
+    return controlled(
+        {
+            "continuation_id": None,
+            "answer": result.answer,
+            "tool_calls": result.tool_calls,
+            "observations": result.observations,
+            "completed": result.completed,
+        }
+    )
 
-    return {
-        "continuation_id": next((value for value in continuation_ids if value), None),
-        "answer": result.answer,
-        "tool_calls": result.tool_calls,
-        "observations": result.observations,
-        "completed": result.completed,
-    }
+
+@app.post("/investigate", dependencies=[Depends(require_api_token)])
+def investigate(request: InvestigationRequest) -> dict:
+    result = _investigate(request)
+    if "control" in result:
+        return result
+    return controlled(result)
 
 
 @app.post("/media/confirm", dependencies=[Depends(require_api_token)])

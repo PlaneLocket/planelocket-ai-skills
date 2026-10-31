@@ -184,6 +184,7 @@ def test_ambiguous_bibliographic_matches_require_a_choice(setup):
     result = ask(setup)
     assert result["continuation_id"]
     assert outcome(result)["reason"] == "book_selection_required"
+    assert result["control"]["outcome"] == "clarification_required"
     assert outcome(result)["candidates"][0]["source"] == "OpenLibrary"
     assert outcome(result)["search_complete"] is False
     assert "OL123W" not in str(result)
@@ -557,6 +558,8 @@ def test_explicit_request_with_single_verified_match_submits_without_confirmatio
     result = ask(setup, author="Example Author")
     assert outcome(result)["submission"]["submitted"] is True
     assert result["continuation_id"] is None
+    assert result["control"]["outcome"] == "completed"
+    assert result["control"]["next_action"] == "respond"
     assert "Choose" not in result["answer"]
     assert setup[1].writes == [
         ("add", "OL123W", "OpenLibrary"),
@@ -571,6 +574,7 @@ def test_single_match_dry_run_has_no_confirmation_and_no_writes(setup):
     result = ask(setup)
     assert outcome(result)["submission"]["reason"] == "dry_run"
     assert outcome(result)["metadata_records_skipped"] == 6
+    assert result["control"]["outcome"] == "blocked"
     assert result["continuation_id"] is None
     assert not setup[1].writes
 

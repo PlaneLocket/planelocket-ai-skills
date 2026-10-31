@@ -233,3 +233,15 @@ format requirements receive a limitation instead of being silently dropped.
 
 See [book API, configuration, selection and rollout](../docs/BOOK_ACQUISITION.md).
 Update the backend on Kvasir and both `client.py` and `llm_api.py` on Frigg.
+
+## Generic interaction contract
+
+Provider lifecycle and policy instructions are not embedded in this connector.
+The backend owns the answer and versioned interaction control; HA registers tools,
+forwards user inputs, preserves control/context and enforces transport bounds.
+Provider capability changes within the existing interface need no HA code change.
+
+See [acceptance criteria, ownership and protocol](../docs/ADAPTER_CONTRACT.md).
+For this contract upgrade deploy the backend first, then both `client.py` and
+`llm_api.py`; tool registration remains offline. Natural-language routing and
+phrasing must still be verified with live HAL, separately from automated tests.

@@ -70,9 +70,9 @@ def validate_question(value: Any) -> str:
 
 def validate_acquisition(title=None, year=None, continuation_id=None):
     """Validate structured acquisition arguments before sending any request."""
-    if title is not None and (not isinstance(title, str) or not 1 <= len(title.strip()) <= 500):
+    if title is not None and (not isinstance(title, str) or not title.strip()):
         raise PlaneLocketError("invalid_question")
-    if year is not None and (type(year) is not int or not 1800 <= year <= 2199):
+    if year is not None and (type(year) is not int):
         raise PlaneLocketError("invalid_question")
     if continuation_id is not None:
         try:
@@ -94,18 +94,15 @@ def validate_acquisition(title=None, year=None, continuation_id=None):
 
 def validate_tv_scope(seasons=None, all_seasons=False):
     """Validate explicit season selection before sending an acquisition POST."""
-    if type(all_seasons) is not bool or (seasons is not None and all_seasons):
+    if type(all_seasons) is not bool:
         raise PlaneLocketError("invalid_question")
     if seasons is not None and (
-        not isinstance(seasons, list)
-        or not 1 <= len(seasons) <= 100
-        or any(type(number) is not int or not 0 <= number <= 999 for number in seasons)
-        or len(set(seasons)) != len(seasons)
+        not isinstance(seasons, list) or any(type(number) is not int for number in seasons)
     ):
         raise PlaneLocketError("invalid_question")
     fields = {}
     if seasons is not None:
-        fields["seasons"] = sorted(seasons)
+        fields["seasons"] = seasons
     if all_seasons:
         fields["all_seasons"] = True
     return fields
@@ -117,16 +114,12 @@ def validate_book_fields(
     question = validate_question(question)
     fields = validate_acquisition(title, continuation_id=continuation_id)
     if title is None or (
-        author is not None and (not isinstance(author, str) or not 1 <= len(author.strip()) <= 300)
+        author is not None and (not isinstance(author, str) or not author.strip())
     ):
         raise PlaneLocketError("invalid_question")
-    if book_format is not None and (
-        not isinstance(book_format, str) or book_format not in {"EPUB", "PDF", "MOBI"}
-    ):
+    if book_format is not None and (not isinstance(book_format, str) or not book_format.strip()):
         raise PlaneLocketError("invalid_question")
-    if choice is not None and (
-        type(choice) is not int or not 1 <= choice <= 20 or continuation_id is None
-    ):
+    if choice is not None and (type(choice) is not int):
         raise PlaneLocketError("invalid_question")
     body = {"question": question, **fields}
     for key, value in (("author", author), ("format", book_format), ("choice", choice)):
@@ -158,6 +151,29 @@ def _safe_json(value: Any, token: str, depth: int = 0) -> Any:
     return value
 
 
+CONTROL_ACTIONS = {
+    "completed": "respond",
+    "clarification_required": "clarify",
+    "blocked": "stop",
+    "uncertain": "stop",
+}
+
+
+def validate_control(control):
+    """Validate the versioned interaction protocol without reading domain evidence."""
+    if (
+        not isinstance(control, dict)
+        or type(control.get("version")) is not int
+        or control["version"] != 1
+        or not isinstance(control.get("outcome"), str)
+        or control["outcome"] not in CONTROL_ACTIONS
+        or control.get("next_action") != CONTROL_ACTIONS[control["outcome"]]
+        or type(control.get("partial")) is not bool
+    ):
+        raise PlaneLocketError("invalid_response")
+    return {key: control[key] for key in ("version", "outcome", "next_action", "partial")}
+
+
 def bounded_result(payload: Any, token: str) -> dict[str, Any]:
     """Validate the API contract and explicitly mark any omitted evidence."""
     if (
@@ -172,12 +188,14 @@ def bounded_result(payload: Any, token: str) -> dict[str, Any]:
     ):
         raise PlaneLocketError("invalid_response")
 
+    control = validate_control(payload.get("control"))
     try:
         answer = _safe_json(payload["answer"], token)
         observations = _safe_json(payload["observations"], token)
         result = {
             "answer": answer[:MAX_ANSWER_CHARS],
             "completed": payload["completed"],
+            "control": control,
             "tool_calls": payload["tool_calls"],
             "observations": [],
             "answer_truncated": len(answer) > MAX_ANSWER_CHARS,
@@ -190,8 +208,10 @@ def bounded_result(payload: Any, token: str) -> dict[str, Any]:
             except PlaneLocketError:
                 raise PlaneLocketError("invalid_response") from None
             result["continuation_id"] = _safe_json(continuation_id, token)
-        if not result["completed"]:
-            result["error"] = "Investigation incomplete. Do not present this as a verified answer."
+        if control["outcome"] in {"blocked", "uncertain"}:
+            result["error"] = (
+                "Follow the backend answer and interaction control; do not retry automatically."
+            )
         # UTF-8 may need four bytes per character. Reserve room for the envelope.
         while _json_size(result) > MAX_TOOL_RESULT_BYTES:
             result["answer"] = result["answer"][: len(result["answer"]) // 2]
@@ -258,8 +278,6 @@ class PlaneLocketClient:
 
     async def async_search_books(self, query: str) -> dict[str, Any]:
         query = validate_question(query)
-        if len(query) > 500:
-            raise PlaneLocketError("invalid_question")
         payload = await self._async_request(
             "POST", "/books/search", deadline=REQUEST_TIMEOUT, body={"query": query}
         )
@@ -284,6 +302,8 @@ class PlaneLocketClient:
     async def _async_request(
         self, method: str, path: str, *, deadline: float, body: dict | None = None
     ) -> Any:
+        if body is not None and _json_size(body) > MAX_RESPONSE_BYTES:
+            raise PlaneLocketError("invalid_question")
         headers = {"Accept": "application/json"}
         kwargs: dict[str, Any] = {}
         if body is not None:
@@ -302,10 +322,12 @@ class PlaneLocketClient:
                 ) as response:
                     if response.status in (401, 403):
                         raise PlaneLocketError("invalid_auth")
-                    if response.status != 200:
+                    if 300 <= response.status < 400:
                         raise PlaneLocketError("service_unavailable")
                     if response.content_type != "application/json":
-                        raise PlaneLocketError("invalid_response")
+                        raise PlaneLocketError(
+                            "invalid_response" if response.status == 200 else "service_unavailable"
+                        )
                     if (
                         response.content_length is not None
                         and response.content_length > MAX_RESPONSE_BYTES
@@ -316,7 +338,24 @@ class PlaneLocketClient:
                         body.extend(chunk)
                         if len(body) > MAX_RESPONSE_BYTES:
                             raise PlaneLocketError("response_too_large")
-                    return json.loads(body)
+                    try:
+                        payload = json.loads(body)
+                    except ValueError, UnicodeError, RecursionError:
+                        raise PlaneLocketError(
+                            "invalid_response" if response.status == 200 else "service_unavailable"
+                        ) from None
+                    if response.status != 200:
+                        try:
+                            validate_control(
+                                payload.get("control") if isinstance(payload, dict) else None
+                            )
+                        except PlaneLocketError:
+                            raise PlaneLocketError(
+                                "invalid_question"
+                                if response.status in (400, 409, 422)
+                                else "service_unavailable"
+                            ) from None
+                    return payload
         except TimeoutError:
             raise PlaneLocketError("timeout") from None
         except aiohttp.ClientError, OSError:

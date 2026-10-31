@@ -15,6 +15,7 @@ from planelocket_agent.integrations.lazylibrarian import (
     auto_request_enabled,
     get_client,
 )
+from planelocket_agent.result_contract import controlled
 
 MAX_CHOICES = 20
 FORMATS = {"EPUB", "PDF", "MOBI"}
@@ -56,13 +57,35 @@ def validate_request(
 
 
 def _envelope(answer, evidence, continuation_id=None, completed=True):
-    return {
-        "answer": answer,
-        "completed": completed,
-        "tool_calls": 0,
-        "observations": [evidence],
-        "continuation_id": continuation_id,
-    }
+    submission = evidence.get("submission", {})
+    if "submitted" in submission and submission["submitted"] is None:
+        outcome = "uncertain"
+    elif continuation_id:
+        outcome = "clarification_required"
+    elif not completed or evidence.get("reason") in {
+        "auto_request_disabled",
+        "ll_status_blocked",
+        "no_matching_books",
+        "preparation_state_changed",
+    }:
+        outcome = "blocked"
+    else:
+        outcome = "completed"
+    partial = (
+        evidence.get("result", {}).get("complete") is False
+        or evidence.get("search_complete") is False
+    )
+    return controlled(
+        {
+            "answer": answer,
+            "completed": completed,
+            "tool_calls": 0,
+            "observations": [evidence],
+            "continuation_id": continuation_id,
+        },
+        outcome=outcome,
+        partial=partial,
+    )
 
 
 def _failure(code, *, uncertain=False):
@@ -387,6 +410,7 @@ def acquire_book(
                         result["observations"][0].update(
                             search_evidence, search_complete=False
                         )
+                        result["control"]["partial"] = True
                         if search["records_skipped"]:
                             result["answer"] += (
                                 f" Unusable metadata records skipped: {search['records_skipped']}."

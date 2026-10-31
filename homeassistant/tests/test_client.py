@@ -264,6 +264,7 @@ def test_incomplete_unicode_result_is_serializable_and_bounded(evidence):
     from homeassistant.helpers.json import json_dumps
 
     evidence["completed"] = False
+    evidence["control"].update(outcome="blocked", next_action="stop")
     evidence["answer"] = "🎬" * 10000
     result = bounded_result(evidence, TOKEN)
     assert len(json_dumps(result).encode()) <= MAX_TOOL_RESULT_BYTES
@@ -320,7 +321,7 @@ async def test_tv_acquisition_transport_keeps_scope_and_identity(transport, evid
         "media_type": "tv",
         "title": "Example Series",
         "year": 2020,
-        "seasons": [1, 3],
+        "seasons": [3, 1],
     }
     identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
     await transport.client.async_ask(
@@ -338,13 +339,9 @@ async def test_tv_acquisition_transport_keeps_scope_and_identity(transport, evid
 @pytest.mark.parametrize(
     "scope",
     [
-        {"seasons": []},
         {"seasons": [True]},
         {"seasons": ["2"]},
-        {"seasons": [1, 1]},
-        {"seasons": [-1]},
         {"all_seasons": 1},
-        {"seasons": [1], "all_seasons": True},
     ],
 )
 async def test_invalid_tv_transport_never_sends(transport, scope):
@@ -389,8 +386,6 @@ async def test_book_routes_preserve_choice_and_authentication(transport, evidenc
     "fields",
     [
         {"choice": True},
-        {"choice": 1},
-        {"format": "NZB"},
         {"author": " "},
         {"continuation_id": "invented"},
         {"title": None},
@@ -402,3 +397,37 @@ async def test_invalid_book_fields_never_send(transport, fields):
     with pytest.raises(PlaneLocketError, match="invalid_question"):
         await transport.client.async_acquire_book("get it", **{"title": "Example Book", **fields})
     assert not transport.calls
+
+
+@pytest.mark.parametrize("status", [422, 429, 503])
+async def test_backend_validation_answer_is_preserved_generically(transport, evidence, status):
+    evidence["answer"] = "The backend does not support that constraint."
+    evidence["control"].update(outcome="blocked", next_action="stop")
+    transport.respond(evidence, status=status)
+    result = await transport.client.async_acquire_book(
+        "Get Example", "Example", book_format="FUTURE_FORMAT"
+    )
+    assert result["answer"] == evidence["answer"]
+    assert result["control"]["outcome"] == "blocked"
+    assert transport.calls[-1][2]["json"]["format"] == "FUTURE_FORMAT"
+
+
+async def test_season_policy_is_forwarded_for_backend_validation(transport, evidence):
+    transport.respond(evidence)
+    await transport.client.async_ask(
+        "Get Example",
+        intent="acquire",
+        media_type="tv",
+        title="Example",
+        seasons=[1001, 1001],
+        all_seasons=True,
+    )
+    assert transport.calls[-1][2]["json"]["seasons"] == [1001, 1001]
+    assert transport.calls[-1][2]["json"]["all_seasons"] is True
+
+
+async def test_identity_field_limits_are_owned_by_backend(transport, evidence):
+    transport.respond(evidence)
+    await transport.client.async_acquire_book("Get Example", "T" * 600, author="A" * 400)
+    assert len(transport.calls[-1][2]["json"]["title"]) == 600
+    assert len(transport.calls[-1][2]["json"]["author"]) == 400
