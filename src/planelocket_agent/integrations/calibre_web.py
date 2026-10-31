@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import threading
 import time
 from contextlib import contextmanager
@@ -41,12 +40,6 @@ def text(value, maximum=500):
     if not isinstance(value, str) or not 1 <= len(value.strip()) <= maximum:
         raise BookError("invalid_arguments")
     return value.strip()
-
-
-def opaque(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
-        raise BookError("invalid_response")
-    return value
 
 
 def normalize_origin(value):
@@ -127,13 +120,10 @@ class CalibreWebClient:
                 "/auth/csrf",
                 "/auth/me",
                 "/books",
-                "/acquisition",
-                "/acquisition/catalog",
             )
-        ) or (method == "POST" and path in ("/auth/login", "/acquisition/jobs"))
+        ) or (method == "POST" and path == "/auth/login")
         if not allowed:
             raise BookError("invalid_arguments")
-        is_submission = method == "POST" and path == "/acquisition/jobs"
         remaining = self._deadline - time.monotonic()
         if remaining <= 0:
             raise BookError("timeout")
@@ -151,7 +141,7 @@ class CalibreWebClient:
             req = Request(url, data=data, headers=headers, method=method)
             with self._opener.open(req, timeout=min(10, remaining)) as response:
                 if response.status != expected:
-                    raise BookError("invalid_response", uncertain=is_submission)
+                    raise BookError("invalid_response")
                 if (
                     response.headers.get("Content-Type", "")
                     .split(";")[0]
@@ -159,22 +149,21 @@ class CalibreWebClient:
                     .lower()
                     != "application/json"
                 ):
-                    raise BookError("invalid_response", uncertain=is_submission)
+                    raise BookError("invalid_response")
                 body = response.read(MAX_RESPONSE_BYTES + 1)
                 if len(body) > MAX_RESPONSE_BYTES:
-                    raise BookError("response_too_large", uncertain=is_submission)
+                    raise BookError("response_too_large")
                 result = json.loads(body)
                 if time.monotonic() >= self._deadline:
-                    raise BookError("timeout", uncertain=is_submission)
+                    raise BookError("timeout")
                 return result
         except HTTPError as exc:
-            definite = exc.code in (400, 401, 403, 404, 409, 422, 429)
             codes = {
                 400: "request_rejected",
                 401: "invalid_auth",
                 403: "forbidden",
                 404: "not_available",
-                409: "stale_offer",
+                409: "request_rejected",
                 422: "request_rejected",
                 429: "rate_limited",
                 301: "redirect_refused",
@@ -183,18 +172,13 @@ class CalibreWebClient:
                 307: "redirect_refused",
                 308: "redirect_refused",
             }
-            raise BookError(
-                (
-                    "stale_offer"
-                    if is_submission and exc.code == 404
-                    else codes.get(exc.code, "service_unavailable")
-                ),
-                uncertain=is_submission and not definite,
-            ) from None
+            code = codes.get(exc.code, "service_unavailable")
+            exc.close()
+            raise BookError(code) from None
         except TimeoutError, URLError, OSError:
-            raise BookError("cannot_connect", uncertain=is_submission) from None
+            raise BookError("cannot_connect") from None
         except ValueError, UnicodeError, RecursionError:
-            raise BookError("invalid_response", uncertain=is_submission) from None
+            raise BookError("invalid_response") from None
 
     def _csrf_token(self):
         data = self._request("GET", "/auth/csrf")
@@ -322,67 +306,6 @@ class CalibreWebClient:
                     break
             return {"items": list(rows.values()), "total": total, "complete": False}
 
-    def capabilities(self):
-        data = self.get("/acquisition")
-        if (
-            not isinstance(data, dict)
-            or not isinstance(data.get("connections"), list)
-            or not isinstance(data.get("runtime"), dict)
-            or type(data["runtime"].get("available")) is not bool
-        ):
-            raise BookError("invalid_response")
-        connections = []
-        for item in data["connections"]:
-            if not isinstance(item, dict) or item.get("adapter") not in (
-                "opds",
-                "newznab",
-            ):
-                raise BookError("invalid_response")
-            if item.get("enabled") is not True:
-                continue
-            revision = item.get("revision")
-            if type(revision) is not int or revision <= 0:
-                raise BookError("invalid_response")
-            connections.append(
-                {
-                    "id": opaque(item.get("id")),
-                    "revision": revision,
-                    "adapter": item["adapter"],
-                    "label": self.safe_text(item.get("label"), 200),
-                }
-            )
-        return {
-            "connections": connections,
-            "available": data["runtime"]["available"],
-            "auto_approve": data.get("can_acquire") is True,
-        }
-
-    def catalog(self, connection, *, selection=None, query=None):
-        params = {"connection": opaque(connection)}
-        if selection is not None:
-            params["selection"] = opaque(selection)
-        if query is not None:
-            params["q"] = text(query)
-        data = self.get("/acquisition/catalog", params)
-        if not isinstance(data, dict):
-            raise BookError("invalid_response")
-        return data
-
-    def submit(self, connection, offer, key):
-        with self.session():
-            self._csrf_token()  # Refresh after login/session rotation before mutation.
-            return self._request(
-                "POST",
-                "/acquisition/jobs",
-                payload={
-                    "connection_id": opaque(connection),
-                    "offer_id": opaque(offer),
-                    "idempotency_key": opaque(key),
-                    "add_to_my_library": True,
-                },
-                expected=202,
-            )
-
 
 @lru_cache(maxsize=2)
 def _cached_client(url, username, password):
@@ -396,10 +319,6 @@ def get_client():
     if any(value is None or value == "" for value in values):
         raise BookError("not_configured")
     return _cached_client(*values)
-
-
-def auto_request_enabled():
-    return os.environ.get("CWNG_AUTO_REQUEST", "false").strip().lower() == "true"
 
 
 def main():
@@ -419,17 +338,8 @@ def main():
                 "library_access": True,
                 "visible_books": library["total"],
                 "library_mode": client.library_mode,
-                "book_auto_request": auto_request_enabled(),
             }
-            try:
-                caps = client.capabilities()
-                result.update(
-                    acquisition_access=True,
-                    acquisition_ready=caps["available"],
-                    configured_sources=len(caps["connections"]),
-                )
-            except BookError as exc:
-                result.update(acquisition_access=False, acquisition_code=exc.code)
+
         print(json.dumps(result))
     except BookError as exc:
         print(json.dumps({"ok": False, "code": exc.code}))

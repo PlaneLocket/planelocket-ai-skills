@@ -125,7 +125,7 @@ def search_book_library(request: BookSearchRequest) -> dict:
 
 @app.post("/books/acquire", dependencies=[Depends(require_api_token)])
 def acquire_book_offer(request: BookAcquisitionRequest) -> dict:
-    """Explicit book acquisition is isolated from movie and TV policy."""
+    """LazyLibrarian ebook requests are isolated from movie/TV policy."""
     return acquire_book(
         request.question,
         request.title,

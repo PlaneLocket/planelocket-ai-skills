@@ -1,4 +1,4 @@
-"""HAL book lookup and explicitly selected NextGen acquisition offers."""
+"""CWNG library reads and explicit ebook requests through LazyLibrarian."""
 
 import hashlib
 import json
@@ -8,31 +8,17 @@ import unicodedata
 from contextlib import closing
 from datetime import UTC, datetime
 
-from planelocket_agent.integrations.calibre_web import (
-    BookError,
+from planelocket_agent.integrations.calibre_web import BookError, text
+from planelocket_agent.integrations.calibre_web import get_client as get_library
+from planelocket_agent.integrations.lazylibrarian import (
     auto_request_enabled,
     get_client,
-    opaque,
-    text,
 )
 
 MAX_CHOICES = 20
 FORMATS = {"EPUB", "PDF", "MOBI"}
-OFFER_FORMATS = FORMATS | {"NZB", "Torrent"}
-JOB_STATES = {
-    "awaiting_approval",
-    "awaiting_selection",
-    "queued",
-    "resolving",
-    "downloading",
-    "staged",
-    "publishing",
-    "importing",
-    "imported",
-    "failed",
-    "cancelled",
-    "rejected",
-}
+READY_STATUSES = {"Skipped"}
+HELD_STATUSES = {"Wanted", "Snatched", "Have", "Open"}
 
 
 def _normal(value):
@@ -52,6 +38,8 @@ def validate_request(
     title, author=None, book_format=None, continuation_id=None, choice=None
 ):
     title = text(title)
+    if "<ll>" in title:
+        raise BookError("invalid_arguments")
     if author is not None:
         author = text(author, 300)
     if book_format is not None and (
@@ -79,24 +67,26 @@ def _envelope(answer, evidence, continuation_id=None, completed=True):
 
 def _failure(code, *, uncertain=False):
     descriptions = {
-        "not_configured": "NextGen credentials or address are not configured",
-        "invalid_auth": "NextGen login failed",
-        "forbidden": "the NextGen account lacks permission or its CSRF check failed",
-        "not_available": "NextGen Book Sources is unavailable or not enabled for this account",
-        "rate_limited": "NextGen rate-limited the operation; try later",
-        "invalid_arguments": "provide a title, optional author/format, and a returned numbered choice",
+        "not_configured": "CWNG library credentials or address are not configured",
+        "invalid_auth": "CWNG library login failed",
+        "ll_not_configured": "LazyLibrarian address or API key is not configured",
+        "ll_invalid_auth": "LazyLibrarian rejected API access; a full-access key is required for acquisition",
+        "invalid_arguments": "provide a book title, optional author, and a returned numbered choice",
         "invalid_continuation": "this book selection expired, was consumed, or belongs to another configuration; start again",
-        "library_scope_limited": "the service account does not have the full-library view needed for acquisition",
-        "stale_offer": "the selected offer or source is no longer available; start a fresh search",
-        "acquisition_unavailable": "NextGen Book Sources is not ready to accept requests",
-        "incomplete_library_search": "the library check was incomplete; narrow the title or review NextGen",
+        "library_scope_limited": "the CWNG account does not have the full-library view required for acquisition checks",
+        "incomplete_library_search": "the CWNG library check was incomplete; narrow the title",
+        "ll_incomplete_inventory": "the LazyLibrarian inventory check was incomplete",
+        "ll_identity_changed": "the selected LazyLibrarian book identity changed or could not be verified",
+        "ll_source_changed": "LazyLibrarian metadata-source settings changed; start a fresh search",
+        "format_not_supported": "LazyLibrarian acquisition follows its configured ebook formats; this API cannot enforce a per-request format",
+        "ll_audio_default_unsafe": "LazyLibrarian new-audiobook status must be Skipped or Ignored before adding an ebook through this API",
         "storage_unavailable": "book request state could not be saved",
     }
-    message = descriptions.get(code, "NextGen information could not be verified")
     answer = (
-        "Book request outcome is uncertain. Check NextGen before retrying."
+        "Book request outcome is uncertain. Check LazyLibrarian before retrying."
         if uncertain
-        else f"{message}. No book acquisition job was submitted."
+        else descriptions.get(code, "Book information could not be verified")
+        + ". No ebook request was submitted."
     )
     return _envelope(
         answer,
@@ -111,187 +101,104 @@ def _failure(code, *, uncertain=False):
 
 def lookup_books(query):
     try:
-        client = get_client()
-        result = client.search_library(text(query))
+        result = get_library().search_library(text(query))
         items = result["items"][:25]
-        count = len(items)
         if not result["complete"]:
-            answer = f"Partial NextGen library search: showing {count} matching records visible to the service account; the search is incomplete."
+            answer = f"Partial CWNG library search: showing {len(items)} records visible to the service account; the search is incomplete."
         elif not result["total"]:
-            answer = "No matching books were found in the library visible to the NextGen service account."
+            answer = "No matching books were found in the library visible to the CWNG service account."
         else:
-            answer = f"Found {result['total']} matching book records visible to the NextGen service account; showing {count}."
+            answer = f"Found {result['total']} matching book records visible to the CWNG service account; showing {len(items)}."
         if items:
             answer += " " + "; ".join(
-                f"{item['title']} — {', '.join(item['authors']) or 'author not supplied'} ({', '.join(item['formats']) or 'no files'})"
-                for item in items
+                f"{i['title']} — {', '.join(i['authors']) or 'author not supplied'} ({', '.join(i['formats']) or 'no files'})"
+                for i in items
             )
-        evidence = {
-            **result,
-            "items": items,
-            "display_omitted": max(0, len(result["items"]) - count),
-        }
-        return _envelope(answer, {"tool": "search_books", "result": evidence})
+        return _envelope(
+            answer,
+            {
+                "tool": "search_books",
+                "result": {
+                    **result,
+                    "items": items,
+                    "display_omitted": max(0, len(result["items"]) - len(items)),
+                },
+            },
+        )
     except BookError as exc:
         return _failure(exc.code)
 
 
 def _existing(client, title, author, book_format):
-    library = client.search_library(title)
-    if not library["complete"]:
+    result = client.search_library(title)
+    if not result["complete"]:
         raise BookError("incomplete_library_search")
     return [
         item
-        for item in library["items"]
+        for item in result["items"]
         if _normal(item["title"]) == _normal(title)
         and (author is None or _authors_match(author, item["authors"]))
         and (book_format in item["formats"] if book_format else bool(item["formats"]))
     ]
 
 
+def _matches(item, title, author):
+    return _normal(item["title"]) == _normal(title) and (
+        author is None or _authors_match(author, item["authors"])
+    )
+
+
 def _public(candidate, number):
     return {
         "choice": number,
         **{
-            key: candidate[key]
-            for key in ("title", "authors", "languages", "format", "source")
+            key: candidate.get(key)
+            for key in ("title", "authors", "year", "isbn", "language", "source")
         },
     }
 
 
-def _collect(client, title, author, book_format, caps):
-    """Use only server-issued search/navigation selections, never source URLs."""
-    candidates, seen, warnings = [], set(), []
-    query = title + (" " + author if author and len(title) + len(author) < 499 else "")
-    for connection in caps["connections"][:4]:
-        try:
-            root = client.catalog(connection["id"])
-            searches = root.get("searches", [])
-            if not isinstance(searches, list):
-                raise BookError("invalid_response")
-            pages = []
-            if searches:
-                if len(searches) > 2:
-                    warnings.append("some_search_templates_not_queried")
-                for search in searches[:2]:
-                    if not isinstance(search, dict):
-                        raise BookError("invalid_response")
-                    pages.append(
-                        client.catalog(
-                            connection["id"],
-                            selection=opaque(search.get("selection")),
-                            query=query,
-                        )
-                    )
-            else:
-                pages.append(root)
-                warnings.append("source_has_no_advertised_search")
-            selections = set()
-            for offset in range(5):
-                if offset >= len(pages):
-                    break
-                page = pages[offset]
-                groups = page.get("groups", [])
-                if not isinstance(groups, list) or any(
-                    not isinstance(group, dict) for group in groups
-                ):
-                    raise BookError("invalid_response")
-                sections = [page, *groups]
-                for section in sections:
-                    publications = section.get("publications", [])
-                    if not isinstance(publications, list):
-                        raise BookError("invalid_response")
-                    for publication in publications:
-                        if not isinstance(publication, dict):
-                            raise BookError("invalid_response")
-                        label = client.safe_text(publication.get("title"), 1000)
-                        # Search results are choices, not an assertion of unique bibliographic identity.
-                        if f" {_normal(title)} " not in f" {_normal(label)} ":
-                            continue
-                        authors = publication.get("authors", [])
-                        languages = publication.get("languages", [])
-                        offers = publication.get("offers", [])
-                        if not all(
-                            isinstance(value, list)
-                            for value in (authors, languages, offers)
-                        ):
-                            raise BookError("invalid_response")
-                        authors = [client.safe_text(value, 300) for value in authors]
-                        if author and authors and not _authors_match(author, authors):
-                            continue
-                        if (
-                            author
-                            and not authors
-                            and not set(_normal(author).split())
-                            <= set(_normal(label).split())
-                        ):
-                            continue
-                        languages = [
-                            client.safe_text(value, 100) for value in languages
-                        ]
-                        publication_id = opaque(publication.get("identity"))
-                        for offer in offers:
-                            if not isinstance(offer, dict):
-                                raise BookError("invalid_response")
-                            fmt = offer.get("format")
-                            if (
-                                not isinstance(fmt, str)
-                                or fmt not in OFFER_FORMATS
-                                or offer.get("relation")
-                                not in ("download", "acquisition")
-                            ):
-                                continue
-                            # Container formats cannot verify an explicitly requested ebook format.
-                            if book_format is not None and fmt != book_format:
-                                continue
-                            offer_identity = opaque(offer.get("identity"))
-                            key = (connection["id"], publication_id, offer_identity)
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            if len(candidates) >= MAX_CHOICES:
-                                warnings.append("choice_limit")
-                                continue
-                            candidates.append(
-                                {
-                                    "title": label,
-                                    "authors": authors,
-                                    "languages": languages,
-                                    "format": fmt,
-                                    "source": connection["label"],
-                                    "connection_id": connection["id"],
-                                    "revision": connection["revision"],
-                                    "publication_identity": publication_id,
-                                    "offer_identity": offer_identity,
-                                    "offer_id": opaque(offer.get("offer_id")),
-                                }
-                            )
-                pagination = page.get("pagination", [])
-                if not isinstance(pagination, list):
-                    raise BookError("invalid_response")
-                for nav in pagination:
-                    if not isinstance(nav, dict) or not isinstance(
-                        nav.get("relations", []), list
-                    ):
-                        raise BookError("invalid_response")
-                    if "next" not in nav.get("relations", []):
-                        continue
-                    token = opaque(nav.get("selection"))
-                    if token in selections:
-                        warnings.append("pagination_repeated")
-                        continue
-                    selections.add(token)
-                    if len(pages) >= 5:
-                        warnings.append("source_page_limit")
-                        continue
-                    pages.append(client.catalog(connection["id"], selection=token))
-        except BookError as exc:
-            warnings.append(exc.code)
-    if len(caps["connections"]) > 4:
-        warnings.append("source_limit")
-    if len(candidates) > MAX_CHOICES:
-        warnings.append("choice_limit")
-    return candidates[:MAX_CHOICES], sorted(set(warnings))
+def _state_result(item):
+    status = item["status"]
+    if status in READY_STATUSES:
+        return None
+    if status in {"Have", "Open"}:
+        reason, detail = (
+            "already_in_library",
+            "LazyLibrarian reports this ebook as already owned",
+        )
+    elif status in {"Wanted", "Snatched"}:
+        reason, detail = (
+            "already_requested",
+            f"LazyLibrarian already lists this ebook as {status}",
+        )
+    else:
+        reason, detail = (
+            "ll_status_blocked",
+            f"LazyLibrarian status {status} requires review in its UI",
+        )
+    return _envelope(
+        detail + ". No new ebook request was submitted.",
+        {
+            "media_type": "book",
+            "reason": reason,
+            "book_id": item["book_id"],
+            "status": status,
+            "submission": {"submitted": False},
+        },
+    )
+
+
+def _owned_result(matches):
+    return _envelope(
+        "Matching book files are already in the library visible to the CWNG account. No ebook request was submitted.",
+        {
+            "media_type": "book",
+            "reason": "already_in_library",
+            "matches": matches,
+            "submission": {"submitted": False},
+        },
+    )
 
 
 def initialize_book_journal(storage):
@@ -341,18 +248,6 @@ def _record(storage, key, status, job_id=None, remote_state=None):
         pass
 
 
-def _owned_result(matches):
-    return _envelope(
-        "Matching book files are already in the library visible to the NextGen account. No book acquisition job was submitted.",
-        {
-            "media_type": "book",
-            "reason": "already_in_library",
-            "matches": matches,
-            "submission": {"submitted": False},
-        },
-    )
-
-
 def acquire_book(
     question,
     title,
@@ -363,186 +258,232 @@ def acquire_book(
     choice=None,
     storage,
 ):
-    """Prepare source choices, or submit exactly one stored choice when enabled."""
+    """Resolve a book explicitly, then verify its ebook Wanted state after mutation."""
     try:
         title, author, book_format = validate_request(
             title, author, book_format, continuation_id, choice
         )
-        client = get_client()
-        with client.session():
-            if client.library_mode != "monolibrary":
+        library, client = get_library(), get_client()
+        with library.session(), client.session():
+            if library.library_mode != "monolibrary":
                 raise BookError("library_scope_limited")
+            target = hashlib.sha256(
+                json.dumps([library.target, client.target]).encode()
+            ).hexdigest()
+            if continuation_id is not None:
+                record = storage.get_continuation(continuation_id)
+                context = record.get("context", {}) if record else {}
+                if (
+                    context.get("media_type") != "book"
+                    or context.get("backend") != "lazylibrarian"
+                    or context.get("target") != target
+                ):
+                    raise BookError("invalid_continuation")
+                if choice is None:
+                    match = re.fullmatch(
+                        r"(?:option |choice |number )?(\d{1,2})[.!]?",
+                        question.strip().lower(),
+                    )
+                    choice = int(match[1]) if match else None
+                candidates = record["candidates"]
+                if type(choice) is not int or not 1 <= choice <= len(candidates):
+                    return _envelope(
+                        "Choose one of the returned book numbers. No ebook request was submitted.",
+                        {
+                            "reason": "book_selection_required",
+                            "candidates": [
+                                _public(c, i) for i, c in enumerate(candidates, 1)
+                            ],
+                            "submission": {"submitted": False},
+                        },
+                        continuation_id,
+                    )
+                selected = candidates[choice - 1]
+                # Use the stored selected bibliographic identity, never replacement input.
+                title, author = selected["title"], selected["authors"][0]
+                book_format = context.get("format")
+            owned = _existing(library, title, author, book_format)
+            if owned:
+                if continuation_id:
+                    storage.consume_continuation(continuation_id)
+                return _owned_result(owned)
+            if book_format is not None:
+                raise BookError("format_not_supported")
+            inventory = client.inventory()
             if continuation_id is None:
-                owned = _existing(client, title, author, book_format)
-                if owned:
-                    return _owned_result(owned)
-                caps = client.capabilities()
-                if not caps["available"]:
-                    raise BookError("acquisition_unavailable")
-                candidates, warnings = _collect(
-                    client, title, author, book_format, caps
-                )
+                local = [i for i in inventory if _matches(i, title, author)]
+                if len(local) == 1:
+                    held = _state_result(local[0])
+                    if held:
+                        return held
+                source = client.config("BOOK_API")
+                # Existing LL records take precedence over external metadata IDs.
+                candidates = local or [
+                    i
+                    for i in client.find(title)
+                    if _matches(i, title, author) and i["source"] == source
+                ]
+                unique = {}
+                for item in candidates:
+                    unique.setdefault(item["book_id"], item)
+                candidates = list(unique.values())
                 if not candidates:
                     return _envelope(
-                        "No selectable acquisition offers were found in the configured sources searched. No book acquisition job was submitted.",
+                        "No matching book was verified in LazyLibrarian or its returned metadata search. Try a title and author. No ebook request was submitted.",
                         {
-                            "media_type": "book",
-                            "reason": "no_selectable_offers",
-                            "search_warnings": warnings,
+                            "reason": "no_matching_books",
                             "submission": {"submitted": False},
                         },
                     )
+                omitted = max(0, len(candidates) - MAX_CHOICES)
+                candidates = candidates[:MAX_CHOICES]
                 identifier = storage.create_continuation(
                     title,
                     candidates,
                     context={
                         "media_type": "book",
-                        "target": client.target,
+                        "backend": "lazylibrarian",
+                        "target": target,
+                        "metadata_source": source,
                         "author": author,
                         "format": book_format,
                     },
                 )
-                public = [
-                    _public(item, index) for index, item in enumerate(candidates, 1)
-                ]
                 choices = "; ".join(
-                    f"{item['choice']}: {item['title']} — {', '.join(item['authors']) or 'author unverified'} — {item['format']} — {item['source']}"
-                    for item in public
+                    f"{i}: {c['title']} — {', '.join(c['authors'])} — {c.get('year') or 'date unknown'} — {c['source']}"
+                    for i, c in enumerate(candidates, 1)
                 )
                 return _envelope(
-                    "Choose a numbered acquisition offer. "
+                    "Choose a numbered book for an ebook request through LazyLibrarian. "
                     + choices
-                    + ". No book acquisition job was submitted.",
+                    + ". No ebook request was submitted.",
                     {
-                        "media_type": "book",
-                        "reason": "offer_selection_required",
-                        "candidates": public,
-                        "search_warnings": warnings,
+                        "reason": "book_selection_required",
+                        "candidates": [
+                            _public(c, i) for i, c in enumerate(candidates, 1)
+                        ],
+                        "candidates_omitted": omitted,
+                        "search_complete": False,
                         "submission": {"submitted": False},
                     },
                     identifier,
                 )
-            record = storage.get_continuation(continuation_id)
-            context = record.get("context", {}) if record else {}
-            if (
-                context.get("media_type") != "book"
-                or context.get("target") != client.target
-            ):
-                raise BookError("invalid_continuation")
-            candidates = record["candidates"]
-            if choice is None:
-                match = re.fullmatch(
-                    r"(?:option |choice |number )?(\d{1,2})[.!]?",
-                    question.strip().lower(),
-                )
-                choice = int(match[1]) if match else None
-            if type(choice) is not int or not 1 <= choice <= len(candidates):
-                return _envelope(
-                    "Choose one of the returned offer numbers. No book acquisition job was submitted.",
-                    {
-                        "reason": "offer_selection_required",
-                        "candidates": [
-                            _public(item, i) for i, item in enumerate(candidates, 1)
-                        ],
-                        "submission": {"submitted": False},
-                    },
-                    continuation_id,
-                )
-            selected = candidates[choice - 1]
-            selected_format = (
-                selected["format"]
-                if selected["format"] in FORMATS
-                else context.get("format")
+            source = client.config("BOOK_API")
+            if source != context["metadata_source"]:
+                raise BookError("ll_source_changed")
+            current = next(
+                (i for i in inventory if i["book_id"] == selected["book_id"]), None
             )
-            owned = _existing(
-                client, record["title"], context.get("author"), selected_format
-            )
-            if owned:
-                storage.consume_continuation(continuation_id)
-                return _owned_result(owned)
-            caps = client.capabilities()
-            if not caps["available"] or not any(
-                connection["id"] == selected["connection_id"]
-                and connection["revision"] == selected["revision"]
-                for connection in caps["connections"]
-            ):
-                raise BookError("stale_offer")
+            if current:
+                if not _matches(current, selected["title"], selected["authors"][0]):
+                    raise BookError("ll_identity_changed")
+                held = _state_result(current)
+                if held:
+                    storage.consume_continuation(continuation_id)
+                    return held
+            elif selected["source"] == "LazyLibrarian":
+                raise BookError("ll_identity_changed")
+            else:
+                # Refresh metadata before addBook; returned IDs are not globally interchangeable.
+                refreshed = client.find(selected["title"])
+                if not any(
+                    i["book_id"] == selected["book_id"]
+                    and i["source"] == selected["source"]
+                    and _matches(i, selected["title"], selected["authors"][0])
+                    for i in refreshed
+                ):
+                    raise BookError("ll_identity_changed")
+                if client.config("NEWAUDIO_STATUS") not in {"Skipped", "Ignored"}:
+                    raise BookError("ll_audio_default_unsafe")
             if storage.consume_continuation(continuation_id) is None:
                 raise BookError("invalid_continuation")
             evidence = {"media_type": "book", "selected": _public(selected, choice)}
             if not auto_request_enabled():
-                evidence.update(
-                    reason="auto_request_disabled",
-                    submission={"submitted": False, "reason": "dry_run"},
-                )
                 return _envelope(
-                    "Book acquisition is disabled. The selected offer was evaluated; no book acquisition job was submitted.",
-                    evidence,
-                )
-            key = hashlib.sha256(
-                json.dumps(
-                    [
-                        client.target,
-                        selected["connection_id"],
-                        selected["publication_identity"],
-                        selected["offer_identity"],
-                    ]
-                ).encode()
-            ).hexdigest()
-            prior = _reserve(storage, key, continuation_id)
-            if prior is not None:
-                if prior["status"] == "submitted":
-                    evidence.update(
-                        reason="already_requested",
-                        submission={
-                            "submitted": False,
-                            "existing_job_id": prior["job_id"],
-                            "existing_state": prior["remote_state"],
-                        },
-                    )
-                    return _envelope(
-                        "This acquisition offer already has a recorded NextGen request. No new job was submitted.",
-                        evidence,
-                    )
-                return _failure("submission_uncertain", uncertain=True)
-            if not auto_request_enabled():
-                _record(storage, key, "rejected")
-                return _envelope(
-                    "Book acquisition is disabled. No book acquisition job was submitted.",
+                    "Book acquisition is disabled. The selected book was evaluated; no ebook request was submitted.",
                     {
                         **evidence,
                         "reason": "auto_request_disabled",
                         "submission": {"submitted": False, "reason": "dry_run"},
                     },
                 )
-            try:
-                response = client.submit(
-                    selected["connection_id"], selected["offer_id"], continuation_id
-                )
-            except BookError as exc:
-                # Preserve the claim even for a definite rejection: no automatic retry.
-                _record(storage, key, "uncertain" if exc.uncertain else "rejected")
-                return _failure(exc.code, uncertain=exc.uncertain)
-            job_id = response.get("id") if isinstance(response, dict) else None
-            state = response.get("state") if isinstance(response, dict) else None
-            if (
-                not isinstance(job_id, str)
-                or not re.fullmatch(
-                    r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
-                    job_id,
-                )
-                or not isinstance(state, str)
-                or state not in JOB_STATES
-            ):
-                _record(storage, key, "uncertain")
+            key = hashlib.sha256(
+                json.dumps(
+                    ["lazylibrarian", client.target, selected["book_id"]]
+                ).encode()
+            ).hexdigest()
+            prior = _reserve(storage, key, continuation_id)
+            if prior is not None:
+                if prior["status"] == "submitted":
+                    return _envelope(
+                        "This book already has a recorded LazyLibrarian request. No new ebook request was submitted.",
+                        {
+                            **evidence,
+                            "reason": "already_requested",
+                            "submission": {
+                                "submitted": False,
+                                "book_id": prior["job_id"],
+                                "recorded_state": prior["remote_state"],
+                            },
+                        },
+                    )
                 return _failure("submission_uncertain", uncertain=True)
-            _record(storage, key, "submitted", job_id, state)
+            if not auto_request_enabled():
+                _record(storage, key, "rejected")
+                return _envelope(
+                    "Book acquisition is disabled. No ebook request was submitted.",
+                    {
+                        **evidence,
+                        "reason": "auto_request_disabled",
+                        "submission": {"submitted": False, "reason": "dry_run"},
+                    },
+                )
+            added = False
+            queue_acknowledged = False
+            try:
+                if current is None:
+                    client.add(selected["book_id"], selected["source"])
+                    added = True
+                    current = next(
+                        (
+                            i
+                            for i in client.inventory()
+                            if i["book_id"] == selected["book_id"]
+                        ),
+                        None,
+                    )
+                    if current is None or not _matches(
+                        current, selected["title"], selected["authors"][0]
+                    ):
+                        raise BookError("ll_identity_changed", uncertain=True)
+                    if current["status"] not in READY_STATUSES | {"Wanted"}:
+                        raise BookError("ll_status_blocked", uncertain=True)
+                if current["status"] != "Wanted":
+                    if not auto_request_enabled():
+                        raise BookError("ll_policy_changed", uncertain=added)
+                    client.queue(selected["book_id"])
+                    queue_acknowledged = True
+                # A bare OK is not proof: verify this exact book's Wanted state.
+                confirmed = client.status(selected["book_id"])
+                if _normal(confirmed["title"]) != _normal(
+                    selected["title"]
+                ) or confirmed["status"] not in {"Wanted", "Snatched", "Have", "Open"}:
+                    raise BookError("ll_queue_unverified", uncertain=True)
+            except BookError as exc:
+                uncertain = added or queue_acknowledged or exc.uncertain
+                _record(storage, key, "uncertain" if uncertain else "rejected")
+                return _failure(exc.code, uncertain=uncertain)
+            _record(storage, key, "submitted", selected["book_id"], confirmed["status"])
             evidence.update(
                 reason=None,
-                submission={"submitted": True, "job_id": job_id, "state": state},
+                submission={
+                    "submitted": True,
+                    "book_id": selected["book_id"],
+                    "status": confirmed["status"],
+                },
             )
             return _envelope(
-                f"NextGen accepted book acquisition job {job_id}; its state is {state}. This acknowledges the request, not download or import completion.",
+                f"LazyLibrarian accepted the ebook request for {selected['title']}; its verified status is {confirmed['status']}. Its configured scheduler handles acquisition. This does not confirm a download.",
                 evidence,
             )
     except BookError as exc:

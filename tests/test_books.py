@@ -1,7 +1,9 @@
-"""Deterministic book selection, independent policy, and durable request claims."""
+"""CWNG reads, LazyLibrarian-only writes, exact identity and durable claims."""
 
+import sqlite3
 from contextlib import nullcontext
 from copy import deepcopy
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -13,46 +15,27 @@ from planelocket_agent.integrations.calibre_web import BookError
 from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
 
 
-class NextGen:
+def entry(identifier="OL123W", status="Skipped"):
+    return {
+        "book_id": identifier,
+        "title": "Example Book",
+        "authors": ["Example Author"],
+        "year": "2020",
+        "isbn": "9780000000000",
+        "language": "eng",
+        "source": "LazyLibrarian",
+        "status": status,
+    }
+
+
+class Library:
+    target = "cwng-account"
     library_mode = "monolibrary"
-    target = "dedicated-account-and-server"
 
     def __init__(self):
         self.items = []
         self.complete = True
-        self.posts = []
         self.queries = []
-        self.error = None
-        self.ack = {"id": str(uuid4()), "state": "awaiting_approval"}
-        self.caps = {
-            "available": True,
-            "connections": [
-                {
-                    "id": "source-1",
-                    "revision": 1,
-                    "label": "Configured catalog",
-                    "adapter": "opds",
-                }
-            ],
-        }
-        self.page = {
-            "publications": [
-                {
-                    "title": "Example Book",
-                    "authors": ["Example Author"],
-                    "languages": ["en"],
-                    "identity": "publication-1",
-                    "offers": [
-                        {
-                            "format": "EPUB",
-                            "identity": "edition-epub",
-                            "offer_id": "opaque-offer-1",
-                            "relation": "download",
-                        }
-                    ],
-                }
-            ]
-        }
 
     def session(self):
         return nullcontext(self)
@@ -65,206 +48,321 @@ class NextGen:
             "complete": self.complete,
         }
 
-    def capabilities(self):
-        return deepcopy(self.caps)
 
-    def catalog(self, connection, *, selection=None, query=None):
-        if selection is None:
-            return {"searches": [{"selection": "search-token"}]}
-        assert selection == "search-token"
-        assert query.startswith("Example Book")
-        return deepcopy(self.page)
+class LazyLibrarian:
+    target = "ll-server-key"
 
-    @staticmethod
-    def safe_text(value, maximum=500):
-        if not isinstance(value, str) or not value or len(value) > maximum:
-            raise BookError("invalid_response")
-        return value
+    def __init__(self):
+        self.rows = []
+        self.results = [{**entry(), "source": "OpenLibrary"}]
+        self.configs = {
+            "BOOK_API": "OpenLibrary",
+            "NEWAUDIO_STATUS": "Skipped",
+            "NEWBOOK_STATUS": "Skipped",
+        }
+        self.writes = []
+        self.error = None
+        self.bad_status = False
+        self.bad_add = False
+        self.post_read_error = False
 
-    def submit(self, *args):
-        self.posts.append(args)
+    def session(self):
+        return nullcontext(self)
+
+    def inventory(self):
+        return deepcopy(self.rows)
+
+    def config(self, name):
+        return self.configs[name]
+
+    def find(self, query):
+        assert query == "Example Book"
+        return deepcopy(self.results)
+
+    def add(self, identifier, source):
+        self.writes.append(("add", identifier, source))
         if self.error:
             raise self.error
-        return self.ack
+        self.rows.append(entry(identifier))
+        if self.bad_add:
+            self.rows[0]["title"] = "Wrong title"
+        return True
+
+    def queue(self, identifier):
+        self.writes.append(("queue", identifier, "eBook"))
+        if self.error:
+            raise self.error
+        self.rows[0]["status"] = "Wanted"
+        return "OK"
+
+    def status(self, identifier):
+        if self.post_read_error:
+            raise BookError("ll_service_unavailable")
+        return {
+            "title": "Example Book",
+            "status": "Skipped" if self.bad_status else "Wanted",
+        }
 
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    storage = SeerrRequestStorage(tmp_path / "state.sqlite3")
+    storage = SeerrRequestStorage(tmp_path / "requests.sqlite3")
     storage.initialize()
     books.initialize_book_journal(storage)
-    remote = NextGen()
+    library, remote = Library(), LazyLibrarian()
+    monkeypatch.setattr(books, "get_library", lambda: library)
     monkeypatch.setattr(books, "get_client", lambda: remote)
-    monkeypatch.setenv("CWNG_AUTO_REQUEST", "false")
-    monkeypatch.setenv("SEERR_AUTO_REQUEST", "true")
-    monkeypatch.setenv("PLANELOCKET_API_TOKEN", "test-token")
     monkeypatch.setattr(api, "seerr_storage", storage)
-    return remote, storage, monkeypatch
+    monkeypatch.setenv("LAZYLIBRARIAN_AUTO_REQUEST", "false")
+    monkeypatch.setenv("SEERR_AUTO_REQUEST", "true")
+    monkeypatch.setenv(
+        "CWNG_AUTO_REQUEST", "true"
+    )  # This obsolete switch has no authority.
+    monkeypatch.setenv("PLANELOCKET_API_TOKEN", "test-token")
+    return library, remote, storage, monkeypatch
 
 
-def ask(setup, **kwargs):
+def ask(setup, **fields):
     return books.acquire_book(
-        "Get Example Book", "Example Book", storage=setup[1], **kwargs
+        "Get Example Book", "Example Book", storage=setup[2], **fields
     )
+
+
+def select(setup, identifier=None, **fields):
+    identifier = identifier or ask(setup)["continuation_id"]
+    return ask(setup, continuation_id=identifier, choice=1, **fields)
 
 
 def outcome(result):
     return result["observations"][0]
 
 
-def select(setup, token=None, **kwargs):
-    token = token or ask(setup)["continuation_id"]
-    return ask(setup, continuation_id=token, choice=1, **kwargs)
+def enable(setup):
+    setup[3].setenv("LAZYLIBRARIAN_AUTO_REQUEST", "true")
 
 
-def owned():
-    return {
-        "id": 1,
-        "title": "Example Book",
-        "authors": ["Author, Example"],
-        "formats": ["EPUB"],
-        "series": None,
-    }
-
-
-def test_read_only_and_owned_stop_before_sources(setup):
-    remote, _, _ = setup
-    remote.items = [owned()]
-    remote.caps = {"available": False, "connections": []}
+def test_cwng_lookup_is_independent_of_ll_and_owned_stops_writes(setup):
+    setup[0].items = [
+        {
+            "id": 1,
+            "title": "Example Book",
+            "authors": ["Example Author"],
+            "formats": ["EPUB"],
+            "series": None,
+        }
+    ]
     assert books.lookup_books("Example")["completed"]
-    assert (
-        outcome(ask(setup, author="Example Author"))["reason"] == "already_in_library"
-    )
-    assert not remote.posts
+    assert outcome(ask(setup))["reason"] == "already_in_library"
+    assert not setup[1].writes
+    with patch.object(
+        books, "get_client", side_effect=AssertionError("No LL call on lookup")
+    ):
+        assert books.lookup_books("Example")["completed"]
 
 
-def test_one_offer_still_requires_selection_and_hides_tokens(setup):
+def test_explicit_bibliographic_choice_even_for_one_match(setup):
     result = ask(setup)
-    assert outcome(result)["reason"] == "offer_selection_required"
     assert result["continuation_id"]
-    assert "opaque-offer" not in str(result)
-    assert "publication-1" not in str(result)
-    assert outcome(result)["candidates"][0]["format"] == "EPUB"
-    assert not setup[0].posts
+    assert outcome(result)["reason"] == "book_selection_required"
+    assert outcome(result)["candidates"][0]["source"] == "OpenLibrary"
+    assert outcome(result)["search_complete"] is False
+    assert "OL123W" not in str(result)
+    assert not setup[1].writes
 
 
-def test_book_switch_is_independent_and_dry_run_consumes_selection(setup):
+def test_ll_flag_is_independent_and_dry_run_consumes_choice(setup):
     token = ask(setup)["continuation_id"]
     assert outcome(select(setup, token))["submission"]["reason"] == "dry_run"
     assert outcome(select(setup, token))["reason"] == "invalid_continuation"
-    assert not setup[0].posts
+    assert not setup[1].writes
 
 
-def test_ack_and_durable_duplicate_protection(setup):
-    remote, _, env = setup
-    env.setenv("CWNG_AUTO_REQUEST", "true")
+def test_new_book_add_queue_and_verified_wanted(setup):
+    enable(setup)
     result = select(setup)
-    assert outcome(result)["submission"]["state"] == "awaiting_approval"
-    assert "not download or import completion" in result["answer"]
-    assert len(remote.posts) == 1
-    assert outcome(select(setup))["reason"] == "already_requested"
-    assert len(remote.posts) == 1
+    assert outcome(result)["submission"] == {
+        "submitted": True,
+        "book_id": "OL123W",
+        "status": "Wanted",
+    }
+    assert setup[1].writes == [
+        ("add", "OL123W", "OpenLibrary"),
+        ("queue", "OL123W", "eBook"),
+    ]
+    assert "does not confirm a download" in result["answer"]
+    assert outcome(ask(setup))["reason"] == "already_requested"
+    assert len(setup[1].writes) == 2
+
+
+def test_existing_skipped_book_only_queues_ebook_and_preserves_audio_defaults(setup):
+    enable(setup)
+    setup[1].rows = [entry()]
+    setup[1].configs["NEWAUDIO_STATUS"] = "Wanted"
+    assert outcome(select(setup))["submission"]["submitted"] is True
+    assert setup[1].writes == [("queue", "OL123W", "eBook")]
 
 
 @pytest.mark.parametrize(
-    "ack",
-    [None, {}, {"id": "wrong", "state": "queued"}, {"id": str(uuid4()), "state": []}],
+    "status,reason",
+    [
+        ("Wanted", "already_requested"),
+        ("Snatched", "already_requested"),
+        ("Open", "already_in_library"),
+        ("Have", "already_in_library"),
+        ("Ignored", "ll_status_blocked"),
+        ("Unknown", "ll_status_blocked"),
+    ],
 )
-def test_bad_ack_is_uncertain_and_not_reposted(setup, ack):
-    remote, _, env = setup
-    env.setenv("CWNG_AUTO_REQUEST", "true")
-    remote.ack = ack
-    assert outcome(select(setup))["submission"]["submitted"] is None
-    assert outcome(select(setup))["submission"]["submitted"] is None
-    assert len(remote.posts) == 1
+def test_existing_states_block_writes(setup, status, reason):
+    enable(setup)
+    setup[1].rows = [entry(status=status)]
+    assert outcome(ask(setup))["reason"] == reason
+    assert not setup[1].writes
 
 
-def test_lost_ack_blocks_new_selection_but_definite_rejection_can_be_reselected(setup):
-    remote, _, env = setup
-    env.setenv("CWNG_AUTO_REQUEST", "true")
-    remote.error = BookError("stale_offer")
+def test_new_book_cannot_inherit_audiobook_request(setup):
+    enable(setup)
+    token = ask(setup)["continuation_id"]
+    setup[1].configs["NEWAUDIO_STATUS"] = "Wanted"
+    assert outcome(select(setup, token))["reason"] == "ll_audio_default_unsafe"
+    assert not setup[1].writes
+
+
+def test_selected_metadata_is_authoritative_and_key_rotation_rejects_old_token(setup):
+    enable(setup)
+    token = ask(setup)["continuation_id"]
+    result = books.acquire_book(
+        "option 1", "Caller replacement", storage=setup[2], continuation_id=token
+    )
+    assert outcome(result)["submission"]["submitted"] is True
+    assert setup[0].queries[-1] == "Example Book"
+    token = setup[2].create_continuation(
+        "Example Book",
+        [entry()],
+        context={
+            "media_type": "book",
+            "backend": "lazylibrarian",
+            "target": "old-target",
+        },
+    )
+    assert outcome(select(setup, token))["reason"] == "invalid_continuation"
+
+
+def test_source_change_and_remote_identity_change_block_submission(setup):
+    enable(setup)
+    token = ask(setup)["continuation_id"]
+    setup[1].configs["BOOK_API"] = "HardCover"
+    assert outcome(select(setup, token))["reason"] == "ll_source_changed"
+    setup[1].configs["BOOK_API"] = "OpenLibrary"
+    setup[1].results[0]["authors"] = ["Other Author"]
+    assert outcome(select(setup, token))["reason"] == "ll_identity_changed"
+    assert not setup[1].writes
+
+
+def test_library_arrival_and_ll_status_are_rechecked(setup):
+    enable(setup)
+    token = ask(setup)["continuation_id"]
+    setup[1].rows = [entry(status="Snatched")]
+    assert outcome(select(setup, token))["reason"] == "already_requested"
+    assert not setup[1].writes
+
+
+def test_incomplete_library_and_inventory_block_absence(setup):
+    enable(setup)
+    setup[0].complete = False
+    assert outcome(ask(setup))["reason"] == "incomplete_library_search"
+    assert "Partial" in books.lookup_books("Example")["answer"]
+    setup[0].complete = True
+    with patch.object(
+        setup[1], "inventory", side_effect=BookError("ll_incomplete_inventory")
+    ):
+        assert outcome(ask(setup))["reason"] == "ll_incomplete_inventory"
+    assert not setup[1].writes
+
+
+def test_specific_format_constraint_is_not_silently_dropped(setup):
+    enable(setup)
+    assert outcome(ask(setup, book_format="EPUB"))["reason"] == "format_not_supported"
+    assert not setup[1].writes
+
+
+@pytest.mark.parametrize("fault", ["bad_status", "post_read_error", "bad_add"])
+def test_partial_or_unverified_write_stays_uncertain_and_cannot_repeat(setup, fault):
+    enable(setup)
+    remote = setup[1]
+    setattr(remote, fault, True)
+    if fault != "bad_add":
+        remote.rows = [entry()]
+    assert outcome(select(setup))["submission"]["submitted"] is None
+    count = len(remote.writes)
+    # A fresh UI search cannot bypass the durable claim after an ambiguous write.
+    remote.rows = [entry()]
+    setattr(remote, fault, False)
+    assert outcome(select(setup))["submission"]["submitted"] is None
+    assert len(remote.writes) == count
+
+
+def test_timeout_never_replays_add_and_definite_rejection_needs_new_choice(setup):
+    enable(setup)
+    remote = setup[1]
+    remote.error = BookError("ll_invalid_auth")
     assert outcome(select(setup))["submission"]["submitted"] is False
-    remote.error = BookError("cannot_connect", uncertain=True)
+    remote.error = BookError("ll_cannot_connect", uncertain=True)
     assert outcome(select(setup))["submission"]["submitted"] is None
     remote.error = None
     assert outcome(select(setup))["submission"]["submitted"] is None
-    assert len(remote.posts) == 2
+    assert len(remote.writes) == 2
 
 
-def test_arriving_book_is_checked_again_before_submit(setup):
-    remote, _, env = setup
-    env.setenv("CWNG_AUTO_REQUEST", "true")
+def test_durable_success_blocks_repeat_even_if_remote_status_later_skipped(setup):
+    enable(setup)
+    select(setup)
+    setup[1].rows = [entry()]
+    assert outcome(select(setup))["reason"] == "already_requested"
+    assert len(setup[1].writes) == 2
+
+
+def test_old_cwng_movie_tv_and_expired_tokens_are_rejected(setup):
+    for context in (
+        {"media_type": "movie"},
+        {"media_type": "tv"},
+        {"media_type": "book", "target": "old-cwng"},
+    ):
+        token = setup[2].create_continuation("Example Book", [], context=context)
+        assert outcome(select(setup, token))["reason"] == "invalid_continuation"
     token = ask(setup)["continuation_id"]
-    remote.items = [owned()]
-    assert outcome(select(setup, token))["reason"] == "already_in_library"
-    assert not remote.posts
-
-
-def test_stored_title_is_authoritative(setup):
-    remote, storage, env = setup
-    env.setenv("CWNG_AUTO_REQUEST", "true")
-    token = ask(setup)["continuation_id"]
-    result = books.acquire_book(
-        "option 1", "Unrelated replacement", storage=storage, continuation_id=token
-    )
-    assert outcome(result)["submission"]["submitted"] is True
-    assert remote.queries[-1] == "Example Book"
-
-
-def test_source_revision_and_target_changes_block_old_choices(setup):
-    remote, _, env = setup
-    env.setenv("CWNG_AUTO_REQUEST", "true")
-    token = ask(setup)["continuation_id"]
-    remote.caps["connections"][0]["revision"] = 2
-    assert outcome(select(setup, token))["reason"] == "stale_offer"
-    remote.target = "different-account"
+    with sqlite3.connect(setup[2].database_path) as connection:
+        connection.execute(
+            "UPDATE acquisition_continuations SET expires_at='2000-01-01' WHERE id=?",
+            (token,),
+        )
     assert outcome(select(setup, token))["reason"] == "invalid_continuation"
-    assert not remote.posts
+    assert not setup[1].writes
 
 
-def test_wrong_media_continuation_rejected(setup):
-    token = setup[1].create_continuation("Movie", [], context={"media_type": "movie"})
-    assert outcome(select(setup, token))["reason"] == "invalid_continuation"
-
-
-def test_incomplete_library_blocks_absence_and_personal_view_is_readable_only(setup):
-    remote, _, _ = setup
-    remote.complete = False
-    assert outcome(ask(setup))["reason"] == "incomplete_library_search"
-    assert "Partial" in books.lookup_books("Example")["answer"]
-    remote.library_mode = "personal_library"
-    assert outcome(ask(setup))["reason"] == "library_scope_limited"
-    assert books.lookup_books("Example")["completed"]
-    assert not remote.posts
-
-
-def test_ebook_format_does_not_claim_container_contents(setup):
-    remote, _, _ = setup
-    remote.page["publications"][0]["offers"][0]["format"] = "NZB"
-    assert outcome(ask(setup, book_format="EPUB"))["reason"] == "no_selectable_offers"
-    assert outcome(ask(setup))["candidates"][0]["format"] == "NZB"
-
-
-def test_source_failure_is_partial_and_never_a_unique_match(setup):
-    setup[0].page = {"groups": "invalid"}
-    result = ask(setup)
-    assert outcome(result)["reason"] == "no_selectable_offers"
-    assert "invalid_response" in outcome(result)["search_warnings"]
-    assert not setup[0].posts
-
-
-def test_choice_limit_and_invalid_choice_preserve_continuation(setup):
-    remote, _, _ = setup
-    publication = remote.page["publications"][0]
-    remote.page["publications"] = [
-        dict(publication, identity=f"book-{i}") for i in range(30)
-    ]
-    result = ask(setup)
+def test_choice_cap_invalid_reply_and_author_filter(setup):
+    setup[1].results = [{**entry(str(i)), "source": "OpenLibrary"} for i in range(30)]
+    result = ask(setup, author="Example Author")
     assert len(outcome(result)["candidates"]) == 20
-    assert "choice_limit" in outcome(result)["search_warnings"]
+    assert outcome(result)["candidates_omitted"] == 10
     result = ask(setup, continuation_id=result["continuation_id"])
     assert result["continuation_id"]
-    assert outcome(result)["reason"] == "offer_selection_required"
+    assert not setup[1].writes
+    assert outcome(ask(setup, author="Other Author"))["reason"] == "no_matching_books"
+
+
+def test_atomic_journal_and_additive_storage(setup):
+    from concurrent.futures import ThreadPoolExecutor
+
+    storage = setup[2]
+    movie = storage.create_continuation("Movie", [])
+    books.initialize_book_journal(storage)
+    assert storage.get_continuation(movie)["title"] == "Movie"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda _: books._reserve(storage, "same", str(uuid4())), range(2))
+        )
+    assert sum(r is None for r in results) == 1
 
 
 @pytest.mark.parametrize(
@@ -276,137 +374,113 @@ def test_choice_limit_and_invalid_choice_preserve_continuation(setup):
         {"choice": 21},
         {"choice": 1},
         {"continuation_id": "invented"},
+        {"book_id": "invented"},
         {"url": "https://untrusted.test"},
         {"title": " "},
         {"author": " "},
     ],
 )
-def test_api_rejects_invalid_book_arguments_without_job(setup, fields):
+def test_api_validation_without_writes(setup, fields):
     with TestClient(api.app, headers={"Authorization": "Bearer test-token"}) as client:
-        result = client.post(
+        response = client.post(
             "/books/acquire",
-            json={"question": "Get Example Book", "title": "Example Book", **fields},
+            json={"question": "get", "title": "Example Book", **fields},
         )
     assert (
-        result.status_code == 422
-        or outcome(result.json())["reason"] == "invalid_arguments"
+        response.status_code == 422
+        or outcome(response.json())["reason"] == "invalid_arguments"
     )
-    assert not setup[0].posts
+    assert not setup[1].writes
 
 
-def test_api_auth_and_cross_media_replay(setup):
-    token = ask(setup)["continuation_id"]
-    with TestClient(api.app) as client:
+def test_protected_api_routes_and_cross_media_replay_do_not_use_model(setup):
+    with (
+        TestClient(api.app) as client,
+        patch.object(api.PlaneLocketAgent, "investigate") as model,
+    ):
         assert client.post("/books/search", json={"query": "Example"}).status_code in (
             401,
             403,
         )
-        assert client.post(
-            "/books/acquire", json={"question": "get", "title": "x"}
-        ).status_code in (401, 403)
-        response = client.post(
-            "/investigate",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "question": "1",
-                "intent": "acquire",
-                "title": "Example Book",
-                "continuation_id": token,
-            },
-        )
-        assert response.status_code == 422
-        assert "matching acquisition tool" in response.json()["detail"]
-    assert not setup[0].posts
-
-
-def test_expired_choice_and_additive_journal_preserve_movie_records(setup):
-    import sqlite3
-
-    _, storage, _ = setup
-    movie_id = storage.create_continuation("Existing Movie", [])
-    token = ask(setup)["continuation_id"]
-    books.initialize_book_journal(storage)
-    assert storage.get_continuation(movie_id)["title"] == "Existing Movie"
-    with sqlite3.connect(storage.database_path) as connection:
-        connection.execute(
-            "UPDATE acquisition_continuations SET expires_at=? WHERE id=?",
-            ("2000-01-01", token),
-        )
-    assert outcome(select(setup, token))["reason"] == "invalid_continuation"
-
-
-def test_policy_disabled_during_claim_prevents_post(setup):
-    from unittest.mock import patch
-
-    with patch.object(books, "auto_request_enabled", side_effect=[True, False]):
-        result = select(setup)
-    assert outcome(result)["reason"] == "auto_request_disabled"
-    assert not setup[0].posts
-
-
-def test_api_routes_search_and_continuation_without_model(setup):
-    from unittest.mock import patch
-
-    with (
-        TestClient(api.app, headers={"Authorization": "Bearer test-token"}) as client,
-        patch.object(api.PlaneLocketAgent, "investigate") as model,
-    ):
-        result = client.post("/books/search", json={"query": "Example"}).json()
-        assert result["completed"]
-        first = client.post(
-            "/books/acquire",
-            json={
-                "question": "get Example Book",
-                "title": "Example Book",
-                "format": "EPUB",
-            },
-        ).json()
+        client.headers["Authorization"] = "Bearer test-token"
+        assert client.post("/books/search", json={"query": "Example"}).json()[
+            "completed"
+        ]
         result = client.post(
-            "/books/acquire",
-            json={
-                "question": "option 1",
-                "title": "Example Book",
-                "choice": 1,
-                "continuation_id": first["continuation_id"],
-            },
+            "/books/acquire", json={"question": "get", "title": "Example Book"}
         ).json()
-        assert outcome(result)["submission"]["reason"] == "dry_run"
-        model.assert_not_called()
-    assert not setup[0].posts
-
-
-def test_atomic_journal_claim_across_workers(setup):
-    from concurrent.futures import ThreadPoolExecutor
-
-    storage = setup[1]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(
-            pool.map(
-                lambda _: books._reserve(storage, "same-artifact", str(uuid4())),
-                range(2),
-            )
+        token = result["continuation_id"]
+        response = client.post(
+            "/books/acquire",
+            json={"question": "1", "title": "Example Book", "continuation_id": token},
         )
-    assert sum(result is None for result in results) == 1
-    assert (
-        next(result for result in results if result is not None)["status"]
-        == "submitting"
-    )
+        assert outcome(response.json())["submission"]["reason"] == "dry_run"
+        token = ask(setup)["continuation_id"]
+        assert (
+            client.post(
+                "/investigate",
+                json={
+                    "question": "1",
+                    "intent": "acquire",
+                    "title": "Example Book",
+                    "continuation_id": token,
+                },
+            ).status_code
+            == 422
+        )
+        model.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "publication",
-    [
+def test_policy_rechecked_after_journal_reservation(setup):
+    with patch.object(books, "auto_request_enabled", side_effect=[True, False]):
+        assert outcome(select(setup))["reason"] == "auto_request_disabled"
+    assert not setup[1].writes
+
+
+def test_library_arrival_at_selection_prevents_ll_request(setup):
+    enable(setup)
+    token = ask(setup)["continuation_id"]
+    setup[0].items = [
         {
+            "id": 1,
             "title": "Example Book",
-            "authors": [],
-            "languages": [],
-            "identity": "pub",
-            "offers": [{"format": [], "relation": "download"}],
-        },
-        {"title": "Example Book", "authors": "invalid"},
-    ],
-)
-def test_malformed_source_metadata_cannot_create_job(setup, publication):
-    setup[0].page = {"publications": [publication]}
-    assert outcome(ask(setup))["reason"] == "no_selectable_offers"
-    assert not setup[0].posts
+            "authors": ["Example Author"],
+            "formats": ["EPUB"],
+            "series": None,
+        }
+    ]
+    assert outcome(select(setup, token))["reason"] == "already_in_library"
+    assert not setup[1].writes
+
+
+def test_cannot_request_missing_local_record_or_id_collision(setup):
+    enable(setup)
+    setup[1].rows = [entry()]
+    token = ask(setup)["continuation_id"]
+    setup[1].rows = []
+    assert outcome(select(setup, token))["reason"] == "ll_identity_changed"
+    setup[1].rows = [{**entry(), "authors": ["Different Author"]}]
+    assert outcome(select(setup, token))["reason"] == "ll_identity_changed"
+    assert not setup[1].writes
+
+
+def test_new_record_already_wanted_by_defaults_is_not_queued_twice(setup):
+    enable(setup)
+    remote = setup[1]
+    original_add = remote.add
+
+    def add(identifier, source):
+        original_add(identifier, source)
+        remote.rows[0]["status"] = "Wanted"
+
+    remote.add = add
+    assert outcome(select(setup))["submission"]["submitted"] is True
+    assert remote.writes == [("add", "OL123W", "OpenLibrary")]
+
+
+def test_disabling_policy_after_add_prevents_queue_and_reports_partial_write(setup):
+    remote = setup[1]
+    with patch.object(books, "auto_request_enabled", side_effect=[True, True, False]):
+        result = select(setup)
+    assert outcome(result)["submission"]["submitted"] is None
+    assert remote.writes == [("add", "OL123W", "OpenLibrary")]

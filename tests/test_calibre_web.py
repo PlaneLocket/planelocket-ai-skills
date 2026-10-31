@@ -4,7 +4,6 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
 
 import pytest
 
@@ -101,19 +100,6 @@ def remote():
                         "library_mode": "monolibrary",
                     }
                 )
-            elif route == "/api/v1/acquisition/jobs":
-                assert set(payload) == {
-                    "connection_id",
-                    "offer_id",
-                    "idempotency_key",
-                    "add_to_my_library",
-                }
-                assert payload["add_to_my_library"] is True
-                self.reply(
-                    {"id": str(uuid4()), "state": "queued"},
-                    state["job_status"],
-                    {"Location": "/stolen"} if state["job_status"] == 302 else None,
-                )
             else:
                 self.reply({}, 404)
 
@@ -131,20 +117,22 @@ def remote():
         thread.join()
 
 
-def test_cookie_login_reuse_csrf_refresh_and_allowlisted_paths(remote):
+def test_cookie_login_reuse_and_no_acquisition_routes(remote):
     state, client = remote
     assert client.search_library("Example")["complete"]
     assert client.search_library("Example")["total"] == 1
     assert state["logins"] == 1
-    assert client.library_mode == "monolibrary"
-    client.submit("source", "offer", str(uuid4()))
-    assert state["csrf"] == 2
-    assert (
-        sum(call[:2] == ("POST", "/api/v1/acquisition/jobs") for call in state["calls"])
-        == 1
-    )
-    with client.session(), pytest.raises(cw.BookError, match="invalid_arguments"):
-        client._request("GET", "https://untrusted.test")
+    assert not hasattr(client, "submit")
+    assert not hasattr(client, "capabilities")
+    with client.session():
+        for method, path in (
+            ("GET", "/acquisition"),
+            ("POST", "/acquisition/jobs"),
+            ("GET", "https://untrusted.test"),
+        ):
+            with pytest.raises(cw.BookError, match="invalid_arguments"):
+                client._request(method, path)
+    assert not any("acquisition" in call[1] for call in state["calls"])
 
 
 def test_get_reauthenticates_once(remote):
@@ -153,31 +141,6 @@ def test_get_reauthenticates_once(remote):
     assert client.search_library("Example")["complete"]
     assert state["logins"] == 2
     assert state["book_reads"] == 2
-
-
-@pytest.mark.parametrize(
-    "status,uncertain",
-    [
-        (401, False),
-        (403, False),
-        (404, False),
-        (409, False),
-        (429, False),
-        (500, True),
-        (302, True),
-    ],
-)
-def test_job_post_never_retries(remote, status, uncertain):
-    state, client = remote
-    state["job_status"] = status
-    with pytest.raises(cw.BookError) as failure:
-        client.submit("source", "offer", str(uuid4()))
-    assert failure.value.uncertain is uncertain
-    assert (
-        sum(call[:2] == ("POST", "/api/v1/acquisition/jobs") for call in state["calls"])
-        == 1
-    )
-    assert not any(call[1] == "/stolen" for call in state["calls"])
 
 
 def test_get_redirect_is_refused(remote):
@@ -247,11 +210,3 @@ def test_wrong_authenticated_account_rejected(remote):
 def test_configuration_is_origin_only(url):
     with pytest.raises(cw.BookError, match="not_configured"):
         cw.CalibreWebClient(url, "user", "password")
-
-
-def test_policy_default_and_movie_policy_independence(monkeypatch):
-    monkeypatch.delenv("CWNG_AUTO_REQUEST", raising=False)
-    monkeypatch.setenv("SEERR_AUTO_REQUEST", "true")
-    assert not cw.auto_request_enabled()
-    monkeypatch.setenv("CWNG_AUTO_REQUEST", "true")
-    assert cw.auto_request_enabled()
