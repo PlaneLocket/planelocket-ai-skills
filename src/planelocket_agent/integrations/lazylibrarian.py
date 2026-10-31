@@ -182,7 +182,16 @@ class LazyLibrarianClient:
             uncertain = mutation and exc.code not in (400, 401, 403, 404, 405, 422, 429)
             exc.close()
             raise BookError(code, uncertain=uncertain) from None
-        except TimeoutError, URLError, OSError:
+        except TimeoutError:
+            raise BookError("ll_timeout", uncertain=mutation) from None
+        except URLError as exc:
+            code = (
+                "ll_timeout"
+                if isinstance(exc.reason, TimeoutError)
+                else "ll_cannot_connect"
+            )
+            raise BookError(code, uncertain=mutation) from None
+        except OSError:
             raise BookError("ll_cannot_connect", uncertain=mutation) from None
         except UnicodeError, ValueError, RecursionError:
             raise BookError("ll_invalid_response", uncertain=mutation) from None
@@ -235,7 +244,19 @@ class LazyLibrarianClient:
             data = self._call("findBook", name=text(title))
             if len(data) > 2000:
                 raise BookError("ll_search_too_broad")
-            return [self.item(raw, external=True) for raw in data]
+            # External search results are suggestions, not evidence of library absence.
+            # Reject each unusable suggestion without discarding other valid choices.
+            items, skipped = [], 0
+            for raw in data:
+                try:
+                    items.append(self.item(raw, external=True))
+                except BookError:
+                    skipped += 1
+            return {
+                "items": items,
+                "records_received": len(data),
+                "records_skipped": skipped,
+            }
 
     def add(self, identifier, source):
         with self.session():

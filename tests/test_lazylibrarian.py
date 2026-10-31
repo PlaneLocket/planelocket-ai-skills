@@ -140,7 +140,7 @@ def test_metadata_projection_drops_private_paths_and_remote_links(remote):
     assert result["book_id"] == "OL0W"
     assert "/private/" not in str(result)
     assert "description" not in str(result)
-    result = client.find("Example Book")[0]
+    result = client.find("Example Book")["items"][0]
     assert result["source"] == "OpenLibrary"
     assert "https://" not in str(result)
 
@@ -255,7 +255,9 @@ def test_malformed_metadata_or_secret_as_identifier_is_rejected(remote, payload)
     state, client = remote
     state["response"] = payload
     with pytest.raises(BookError, match="ll_invalid_response"):
-        client.find("Example Book")
+        client.item(payload[0], external=True)
+    result = client.find("Example Book")
+    assert result == {"items": [], "records_received": 1, "records_skipped": 1}
 
 
 def test_configuration_reader_cannot_return_arbitrary_secret_value(remote):
@@ -263,3 +265,66 @@ def test_configuration_reader_cannot_return_arbitrary_secret_value(remote):
     state["response"] = "[" + KEY + "]"
     with pytest.raises(BookError, match="ll_invalid_response"):
         client.config("BOOK_API")
+
+
+def test_large_external_search_keeps_valid_choices_around_invalid_record(remote):
+    state, client = remote
+    valid = {**row(), "source": "OpenLibrary"}
+    bad = {**valid, "AuthorName": " "}
+    payload = [{**valid, "BookID": f"OL{i}W"} for i in range(1812)]
+    payload[667] = bad
+    state["response"] = payload
+    result = client.find("Example Book")
+    assert result["records_received"] == 1812
+    assert result["records_skipped"] == 1
+    assert len(result["items"]) == 1811
+    assert result["items"][666]["book_id"] == "OL666W"
+    assert result["items"][667]["book_id"] == "OL668W"
+    assert "BookFile" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        [],
+        {"source": []},
+        {**row(), "source": "OpenLibrary", "BookName": "x" * 1001},
+    ],
+)
+def test_external_bad_rows_are_omitted_but_inventory_validation_stays_strict(
+    remote, invalid
+):
+    state, client = remote
+    state["response"] = [{**row(), "source": "OpenLibrary"}, invalid]
+    result = client.find("Example Book")
+    assert len(result["items"]) == 1
+    assert result["records_skipped"] == 1
+    with pytest.raises(BookError):
+        client.inventory()
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_read_and_write_timeouts_are_distinguished_without_retries(remote, wrapped):
+    from unittest.mock import patch
+    from urllib.error import URLError
+
+    _, client = remote
+    for command, args, uncertain in [
+        ("findBook", {"name": "Example Book"}, False),
+        ("queueBook", {"id": "OL123W", "type": "eBook"}, True),
+    ]:
+        error = TimeoutError("secret must not appear")
+        with (
+            client.session(),
+            patch.object(
+                client._opener,
+                "open",
+                side_effect=URLError(error) if wrapped else error,
+            ) as send,
+        ):
+            with pytest.raises(BookError, match="ll_timeout") as failure:
+                client._call(command, **args)
+        assert failure.value.uncertain is uncertain
+        assert "secret" not in str(failure.value)
+        send.assert_called_once()

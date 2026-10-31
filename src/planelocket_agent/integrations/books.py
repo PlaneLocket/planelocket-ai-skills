@@ -75,6 +75,7 @@ def _failure(code, *, uncertain=False):
         "invalid_continuation": "this book selection expired, was consumed, or belongs to another configuration; start again",
         "library_scope_limited": "the CWNG account does not have the full-library view required for acquisition checks",
         "incomplete_library_search": "the CWNG library check was incomplete; narrow the title",
+        "ll_timeout": "LazyLibrarian timed out while processing the request",
         "ll_incomplete_inventory": "the LazyLibrarian inventory check was incomplete",
         "ll_identity_changed": "the selected LazyLibrarian book identity changed or could not be verified",
         "ll_source_changed": "LazyLibrarian metadata-source settings changed; start a fresh search",
@@ -318,9 +319,18 @@ def acquire_book(
                         return held
                 source = client.config("BOOK_API")
                 # Existing LL records take precedence over external metadata IDs.
+                search = None if local else client.find(title)
+                search_evidence = (
+                    {}
+                    if search is None
+                    else {
+                        "metadata_records_received": search["records_received"],
+                        "metadata_records_skipped": search["records_skipped"],
+                    }
+                )
                 candidates = local or [
                     i
-                    for i in client.find(title)
+                    for i in search["items"]
                     if _matches(i, title, author) and i["source"] == source
                 ]
                 unique = {}
@@ -329,9 +339,16 @@ def acquire_book(
                 candidates = list(unique.values())
                 if not candidates:
                     return _envelope(
-                        "No matching book was verified in LazyLibrarian or its returned metadata search. Try a title and author. No ebook request was submitted.",
+                        "No matching book was verified in LazyLibrarian or the usable returned metadata records. "
+                        + (
+                            f"Unusable metadata records skipped: {search['records_skipped']}. "
+                            if search and search["records_skipped"]
+                            else ""
+                        )
+                        + "This does not establish that the book is unavailable. Try a title and author. No ebook request was submitted.",
                         {
                             "reason": "no_matching_books",
+                            **search_evidence,
                             "submission": {"submitted": False},
                         },
                     )
@@ -356,6 +373,11 @@ def acquire_book(
                 return _envelope(
                     "Choose a numbered book for an ebook request through LazyLibrarian. "
                     + choices
+                    + (
+                        f". Unusable metadata records skipped: {search['records_skipped']}"
+                        if search and search["records_skipped"]
+                        else ""
+                    )
                     + ". No ebook request was submitted.",
                     {
                         "reason": "book_selection_required",
@@ -364,6 +386,7 @@ def acquire_book(
                         ],
                         "candidates_omitted": omitted,
                         "search_complete": False,
+                        **search_evidence,
                         "submission": {"submitted": False},
                     },
                     identifier,
@@ -390,7 +413,7 @@ def acquire_book(
                     i["book_id"] == selected["book_id"]
                     and i["source"] == selected["source"]
                     and _matches(i, selected["title"], selected["authors"][0])
-                    for i in refreshed
+                    for i in refreshed["items"]
                 ):
                     raise BookError("ll_identity_changed")
                 if client.config("NEWAUDIO_STATUS") not in {"Skipped", "Ignored"}:
