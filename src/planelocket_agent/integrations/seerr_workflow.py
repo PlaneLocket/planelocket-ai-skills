@@ -27,6 +27,7 @@ def prepare_movie_request(
     if (
         not inspection["resolved"]
         and inspection["reason"] == "no_unique_match"
+        and len(inspection.get("candidates", [])) > 1
         and storage is not None
     ):
         continuation_id = storage.create_continuation(title)
