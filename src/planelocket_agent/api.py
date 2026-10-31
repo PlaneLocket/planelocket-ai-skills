@@ -14,6 +14,7 @@ from planelocket_agent.agent import PlaneLocketAgent
 from planelocket_agent.config import load_config
 from planelocket_agent.diagnostics.linux.backend import LinuxDiagnostics
 from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
+from planelocket_agent.integrations.seerr_resolver import find_media
 from planelocket_agent.integrations.seerr_workflow import (
     confirm_movie_request,
     prepare_movie_request,
@@ -72,6 +73,7 @@ class InvestigationRequest(BaseModel):
     """A natural-language question submitted to PlaneLocket AI."""
 
     question: str
+    continuation_id: str | None = None
     conversation_history: list[ConversationMessage] = Field(
         default_factory=list,
         max_length=10,
@@ -101,6 +103,44 @@ def health() -> dict[str, str]:
 def investigate(request: InvestigationRequest) -> dict:
     """Investigate a question using the PlaneLocket AI agent."""
 
+    if request.continuation_id is not None:
+        record = seerr_storage.get_continuation(request.continuation_id)
+        if record is None:
+            raise HTTPException(status_code=400, detail="Invalid or expired continuation")
+
+        question = request.question.strip().lower()
+        if question in {"the new one", "new one", "the newest", "newest", "latest"}:
+            resolution = find_media(record["title"], media_type="movie")
+            candidates = resolution.get("candidates", [])
+            years = sorted(
+                {int(item["year"]) for item in candidates if item.get("year")}
+            )
+            if not years:
+                return {"answer": "I couldn't identify a newest release.", "completed": False,
+                        "tool_calls": 0, "observations": []}
+            year = years[-1]
+            if sum(int(item["year"]) == year for item in candidates) != 1:
+                return {"answer": "Multiple releases share the newest year.", "completed": False,
+                        "tool_calls": 0, "observations": []}
+        elif re.fullmatch(r"(?:the )?(?:19|20)\\d{2}(?: version)?", question):
+            year = int(re.search(r"(?:19|20)\\d{2}", question).group())
+        else:
+            return {"answer": "Please specify the release year or say 'the new one'.",
+                    "completed": False, "tool_calls": 0, "observations": []}
+
+        record = seerr_storage.consume_continuation(request.continuation_id)
+        if record is None:
+            raise HTTPException(status_code=409, detail="Continuation already consumed")
+        outcome = prepare_movie_request(title=record["title"], year=year,
+                                        storage=seerr_storage)
+        submitted = outcome.get("submission", {}).get("submitted", False)
+        answer = (
+            f"Requested {outcome['title']} ({year})." if submitted
+            else f"Evaluated {record['title']} ({year}): {outcome['reason'] or 'not submitted'}."
+        )
+        return {"answer": answer, "completed": True, "tool_calls": 0,
+                "observations": [outcome]}
+
     agent = PlaneLocketAgent(
         skills_directory=Path("skills"),
         client=OllamaClient(),
@@ -126,7 +166,14 @@ def investigate(request: InvestigationRequest) -> dict:
         ],
     )
 
+    continuation_ids = [
+        observation.get("result", {}).get("continuation_id")
+        for observation in result.observations
+        if isinstance(observation, dict) and isinstance(observation.get("result"), dict)
+    ]
+
     return {
+        "continuation_id": next((value for value in continuation_ids if value), None),
         "answer": result.answer,
         "tool_calls": result.tool_calls,
         "observations": result.observations,
