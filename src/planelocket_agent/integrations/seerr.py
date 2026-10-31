@@ -2,6 +2,8 @@
 
 import json
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -22,7 +24,7 @@ class _RejectRedirects(HTTPRedirectHandler):
         return None
 
 
-def _seerr_get(endpoint: str, params: dict | None = None):
+def _seerr_get(endpoint: str, params: dict | None = None, *, timeout: float = 10):
     """Make an authenticated GET request to the Seerr API."""
     base_url = os.environ["SEERR_URL"].rstrip("/")
     api_key = os.environ["SEERR_API_KEY"]
@@ -37,7 +39,7 @@ def _seerr_get(endpoint: str, params: dict | None = None):
     opener = build_opener(_RejectRedirects())
 
     try:
-        with opener.open(request, timeout=10) as response:
+        with opener.open(request, timeout=timeout) as response:
             data = json.load(response)
     except HTTPError as exc:
         raise RuntimeError(f"Seerr returned HTTP {exc.code}") from exc
@@ -53,57 +55,106 @@ def _seerr_get(endpoint: str, params: dict | None = None):
     return data
 
 
+SEARCH_MAX_RESULTS = 2000
+SEARCH_MAX_PAGES = 100
+SEARCH_WORKERS = 6
+SEARCH_BUDGET_SECONDS = 40
+
+
 def search_media(query: str) -> dict:
-    """Search Seerr and retrieve all pages of matching media."""
+    """Collect a complete bounded search before allowing identity resolution.
 
+    Fetch small batches concurrently so common short titles do not require
+    dozens of serial round trips. Never present a partial page set as complete.
+    """
     query = query.strip()
-
     if not query:
         raise ValueError("Search query cannot be empty")
 
-    results = []
-    page = 1
+    deadline = time.monotonic() + SEARCH_BUDGET_SECONDS
+    total_results = None
     total_pages = None
 
-    while total_pages is None or page <= total_pages:
-        response = _seerr_get(
-            "search",
-            {
-                "query": query,
-                "page": page,
-            },
+    def incomplete(reason):
+        return {
+            "results": [],
+            "total_results": total_results,
+            "total_pages": total_pages,
+            "complete": False,
+            "incomplete_reason": reason,
+        }
+
+    def fetch(page):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Search budget exhausted")
+        return _seerr_get(
+            "search", {"query": query, "page": page}, timeout=min(10, remaining)
         )
 
-        if total_pages is None:
-            total_pages = response.get("totalPages")
+    try:
+        first = fetch(1)
+    except RuntimeError, TimeoutError:
+        return incomplete("search_failed")
+    if not isinstance(first, dict):
+        return incomplete("invalid_pagination")
+    total_results = first.get("totalResults")
+    total_pages = first.get("totalPages")
+    if (
+        type(total_results) is not int
+        or total_results < 0
+        or type(total_pages) is not int
+        or total_pages < 1
+    ):
+        return incomplete("invalid_pagination")
+    if total_results > SEARCH_MAX_RESULTS or total_pages > SEARCH_MAX_PAGES:
+        return incomplete("search_limit")
 
-            total_results = response.get("totalResults")
+    def valid_page(response, page):
+        return (
+            isinstance(response, dict)
+            and type(response.get("page")) is int
+            and response["page"] == page
+            and response.get("totalResults") == total_results
+            and response.get("totalPages") == total_pages
+            and isinstance(response.get("results"), list)
+            and all(isinstance(item, dict) for item in response["results"])
+        )
 
-            if type(total_results) is not int or total_results < 0:
-                raise RuntimeError("Invalid Seerr result count")
+    if not valid_page(first, 1):
+        return incomplete("invalid_pagination")
+    results = list(first["results"])
+    # Submit only one batch at a time. When the budget expires there is no
+    # backlog of queued requests continuing to hit Seerr after returning.
+    with ThreadPoolExecutor(max_workers=SEARCH_WORKERS) as pool:
+        for start in range(2, total_pages + 1, SEARCH_WORKERS):
+            if time.monotonic() >= deadline:
+                return incomplete("search_timeout")
+            pages = range(start, min(start + SEARCH_WORKERS, total_pages + 1))
+            try:
+                responses = list(pool.map(fetch, pages))
+            except RuntimeError, TimeoutError:
+                return incomplete("page_failed")
+            for page, response in zip(pages, responses):
+                if not valid_page(response, page):
+                    return incomplete("pagination_changed")
+                results.extend(response["results"])
+            if len(results) > SEARCH_MAX_RESULTS:
+                return incomplete("search_limit")
 
-            if total_results > 200:
-                return {
-                    "results": [],
-                    "total_results": total_results,
-                    "total_pages": total_pages,
-                    "complete": False,
-                }
-
-            if type(total_pages) is not int or total_pages < 1:
-                raise RuntimeError("Invalid Seerr pagination information")
-
-        page_results = response.get("results")
-
-        if not isinstance(page_results, list):
-            raise RuntimeError("Invalid Seerr search results")
-
-        results.extend(page_results)
-        page += 1
-
+    if time.monotonic() >= deadline:
+        return incomplete("search_timeout")
+    if len(results) != total_results:
+        return incomplete("result_count_mismatch")
+    identities = [(item.get("mediaType"), item.get("id")) for item in results]
+    if any(
+        not isinstance(kind, str) or type(identifier) is not int or identifier <= 0
+        for kind, identifier in identities
+    ) or len(set(identities)) != len(identities):
+        return incomplete("invalid_or_repeated_results")
     return {
         "results": results,
-        "total_results": len(results),
+        "total_results": total_results,
         "total_pages": total_pages,
         "complete": True,
     }
