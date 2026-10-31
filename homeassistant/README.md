@@ -205,3 +205,16 @@ The separate `acquire_movie` tool supports structured title/year and server-issu
 continuations. `ask_household` stays read-only. See
 [the acquisition contract and rollout guide](../docs/SEERR_ACQUISITION.md).
 Keep `SEERR_AUTO_REQUEST=false` throughout dry-run validation.
+
+
+## TV acquisition
+
+`acquire_tv` is a separate write-capable tool. It requires `question` and a
+canonical series `title`, with optional premiere `year`, explicit `seasons`,
+`all_seasons`, and `continuation_id`. If season scope is omitted, the backend asks
+which seasons; it never assumes the whole series. Specials require explicit
+season 0. Keep automatic acquisition disabled during rollout.
+
+See [TV scope, API contract, deployment and rollback](../docs/TV_ACQUISITION.md).
+The update requires both `client.py` and `llm_api.py` on Frigg, plus the backend
+update on Kvasir; no dependency changes are needed.

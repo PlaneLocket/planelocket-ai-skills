@@ -302,3 +302,54 @@ def test_invalid_continuation_is_not_returned(evidence, identifier):
     evidence["continuation_id"] = identifier
     with pytest.raises(PlaneLocketError, match="invalid_response"):
         bounded_result(evidence, TOKEN)
+
+
+async def test_tv_acquisition_transport_keeps_scope_and_identity(transport, evidence):
+    transport.respond(evidence)
+    await transport.client.async_ask(
+        "Get Example Series seasons 1 and 3",
+        intent="acquire",
+        media_type="tv",
+        title="Example Series",
+        year=2020,
+        seasons=[3, 1],
+    )
+    assert transport.calls[-1][2]["json"] == {
+        "question": "Get Example Series seasons 1 and 3",
+        "intent": "acquire",
+        "media_type": "tv",
+        "title": "Example Series",
+        "year": 2020,
+        "seasons": [1, 3],
+    }
+    identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
+    await transport.client.async_ask(
+        "all seasons",
+        intent="acquire",
+        media_type="tv",
+        title="Example Series",
+        continuation_id=identifier,
+        all_seasons=True,
+    )
+    assert transport.calls[-1][2]["json"]["all_seasons"] is True
+    assert transport.calls[-1][2]["json"]["continuation_id"] == identifier
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"seasons": []},
+        {"seasons": [True]},
+        {"seasons": ["2"]},
+        {"seasons": [1, 1]},
+        {"seasons": [-1]},
+        {"all_seasons": 1},
+        {"seasons": [1], "all_seasons": True},
+    ],
+)
+async def test_invalid_tv_transport_never_sends(transport, scope):
+    with pytest.raises(PlaneLocketError, match="invalid_question"):
+        await transport.client.async_ask(
+            "get it", intent="acquire", media_type="tv", title="Example Series", **scope
+        )
+    assert not transport.calls

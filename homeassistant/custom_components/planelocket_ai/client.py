@@ -92,6 +92,25 @@ def validate_acquisition(title=None, year=None, continuation_id=None):
     }
 
 
+def validate_tv_scope(seasons=None, all_seasons=False):
+    """Validate explicit season selection before sending an acquisition POST."""
+    if type(all_seasons) is not bool or (seasons is not None and all_seasons):
+        raise PlaneLocketError("invalid_question")
+    if seasons is not None and (
+        not isinstance(seasons, list)
+        or not 1 <= len(seasons) <= 100
+        or any(type(number) is not int or not 0 <= number <= 999 for number in seasons)
+        or len(set(seasons)) != len(seasons)
+    ):
+        raise PlaneLocketError("invalid_question")
+    fields = {}
+    if seasons is not None:
+        fields["seasons"] = sorted(seasons)
+    if all_seasons:
+        fields["all_seasons"] = True
+    return fields
+
+
 def _json_size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
@@ -188,6 +207,9 @@ class PlaneLocketClient:
         title: str | None = None,
         year: int | None = None,
         continuation_id: str | None = None,
+        media_type: str | None = None,
+        seasons: list[int] | None = None,
+        all_seasons: bool = False,
     ) -> dict[str, Any]:
         """Forward one question; never retry a model-backed POST automatically."""
         question = validate_question(question)
@@ -196,6 +218,11 @@ class PlaneLocketClient:
             if intent not in {"acquire", "investigate"}:
                 raise PlaneLocketError("invalid_question")
             body["intent"] = intent
+        if media_type is not None or seasons is not None or all_seasons is not False:
+            if intent != "acquire" or media_type != "tv":
+                raise PlaneLocketError("invalid_question")
+            body["media_type"] = "tv"
+            body.update(validate_tv_scope(seasons, all_seasons))
         if intent == "acquire":
             body.update(validate_acquisition(title, year, continuation_id))
         elif any(value is not None for value in (title, year, continuation_id)):
