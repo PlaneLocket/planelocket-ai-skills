@@ -54,6 +54,7 @@ class LazyLibrarian:
 
     def __init__(self):
         self.rows = []
+        self.skipped = 0
         self.results = [{**entry(), "source": "OpenLibrary"}]
         self.configs = {
             "BOOK_API": "OpenLibrary",
@@ -77,7 +78,11 @@ class LazyLibrarian:
 
     def find(self, query):
         assert query == "Example Book"
-        return deepcopy(self.results)
+        return {
+            "items": deepcopy(self.results),
+            "records_received": len(self.results) + self.skipped,
+            "records_skipped": self.skipped,
+        }
 
     def add(self, identifier, source):
         self.writes.append(("add", identifier, source))
@@ -484,3 +489,40 @@ def test_disabling_policy_after_add_prevents_queue_and_reports_partial_write(set
         result = select(setup)
     assert outcome(result)["submission"]["submitted"] is None
     assert remote.writes == [("add", "OL123W", "OpenLibrary")]
+
+
+def test_skipped_metadata_is_reported_without_blocking_valid_choice_or_selection(setup):
+    setup[1].skipped = 1
+    first = ask(setup)
+    evidence = outcome(first)
+    assert evidence["reason"] == "book_selection_required"
+    assert evidence["metadata_records_skipped"] == 1
+    assert evidence["metadata_records_received"] == 2
+    assert evidence["search_complete"] is False
+    assert "Unusable metadata records skipped: 1" in first["answer"]
+    assert (
+        outcome(select(setup, first["continuation_id"]))["submission"]["reason"]
+        == "dry_run"
+    )
+    assert not setup[1].writes
+
+
+def test_all_invalid_external_results_make_no_absence_claim_or_request(setup):
+    setup[1].skipped = 1812
+    setup[1].results = []
+    result = ask(setup)
+    assert outcome(result)["metadata_records_skipped"] == 1812
+    assert outcome(result)["reason"] == "no_matching_books"
+    assert "does not establish" in result["answer"]
+    assert not result["continuation_id"]
+    assert not setup[1].writes
+
+
+def test_selected_metadata_disappearing_into_skipped_results_blocks_writes(setup):
+    enable(setup)
+    first = ask(setup)
+    setup[1].results = []
+    setup[1].skipped = 1
+    result = select(setup, first["continuation_id"])
+    assert outcome(result)["reason"] == "ll_identity_changed"
+    assert not setup[1].writes
