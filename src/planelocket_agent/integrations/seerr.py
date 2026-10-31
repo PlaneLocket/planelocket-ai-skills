@@ -261,3 +261,25 @@ def request_movie(media_id: int) -> dict:
             "mediaId": media_id,
         },
     )
+
+
+def request_tv(media_id: int, seasons: list[int]) -> dict:
+    """Submit explicitly selected TV seasons; callers enforce authorization."""
+    if type(media_id) is not int or media_id <= 0:
+        raise ValueError("media_id must be a positive integer")
+    if (
+        not isinstance(seasons, list)
+        or not 1 <= len(seasons) <= 100
+        or any(type(number) is not int or not 0 <= number <= 999 for number in seasons)
+        or len(set(seasons)) != len(seasons)
+    ):
+        raise ValueError("seasons must be distinct nonnegative integers")
+    return _seerr_post(
+        "request",
+        {
+            "mediaType": "tv",
+            "mediaId": media_id,
+            "seasons": sorted(seasons),
+            "is4k": False,
+        },
+    )

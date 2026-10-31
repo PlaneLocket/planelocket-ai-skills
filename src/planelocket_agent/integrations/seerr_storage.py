@@ -80,11 +80,19 @@ class SeerrRequestStorage:
                 connection.execute(
                     "ALTER TABLE acquisition_continuations ADD COLUMN candidates TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "context" not in columns:
+                connection.execute(
+                    "ALTER TABLE acquisition_continuations ADD COLUMN context TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def create_continuation(
-        self, title: str, candidates: list[dict] | None = None
+        self,
+        title: str,
+        candidates: list[dict] | None = None,
+        *,
+        context: dict | None = None,
     ) -> str:
-        """Remember an acquisition awaiting movie disambiguation."""
+        """Remember an acquisition awaiting title or season selection."""
 
         title = title.strip()
 
@@ -105,9 +113,9 @@ class SeerrRequestStorage:
                     id,
                     title,
                     created_at,
-                    expires_at, candidates
+                    expires_at, candidates, context
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     continuation_id,
@@ -115,6 +123,7 @@ class SeerrRequestStorage:
                     now.isoformat(),
                     expires_at.isoformat(),
                     json.dumps(candidates or []),
+                    json.dumps(context or {}),
                 ),
             )
 
@@ -130,7 +139,7 @@ class SeerrRequestStorage:
 
             row = connection.execute(
                 """
-                SELECT id, title, created_at, expires_at, candidates
+                SELECT id, title, created_at, expires_at, candidates, context
                 FROM acquisition_continuations
                 WHERE id = ?
                 AND expires_at > ?
@@ -143,6 +152,7 @@ class SeerrRequestStorage:
         record = dict(row)
         if "candidates" in record:
             record["candidates"] = json.loads(record["candidates"])
+        record["context"] = json.loads(record["context"])
         return record
 
     def consume_continuation(self, continuation_id: str) -> dict | None:
@@ -161,7 +171,7 @@ class SeerrRequestStorage:
                 DELETE FROM acquisition_continuations
                 WHERE id = ?
                 AND expires_at > ?
-                RETURNING id, title, created_at, expires_at, candidates
+                RETURNING id, title, created_at, expires_at, candidates, context
                 """,
                 (continuation_id, now),
             ).fetchone()
@@ -171,6 +181,7 @@ class SeerrRequestStorage:
         record = dict(row)
         if "candidates" in record:
             record["candidates"] = json.loads(record["candidates"])
+        record["context"] = json.loads(record["context"])
         return record
 
     def create_pending(self, media_id: int, title: str) -> str:

@@ -8,13 +8,20 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from planelocket_agent.agent import PlaneLocketAgent
 from planelocket_agent.config import load_config
 from planelocket_agent.diagnostics.linux.backend import LinuxDiagnostics
-from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
 from planelocket_agent.integrations.seerr_resolver import find_media
+from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
+from planelocket_agent.integrations.seerr_tv import (
+    TVContinuationError,
+    continue_tv_request,
+    prepare_tv_request,
+    tv_result,
+    validate_seasons,
+)
 from planelocket_agent.integrations.seerr_workflow import (
     confirm_movie_request,
     prepare_movie_request,
@@ -77,6 +84,9 @@ class InvestigationRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=500)
     year: int | None = Field(default=None, ge=1800, le=2199)
     continuation_id: str | None = None
+    media_type: Literal["movie", "tv"] | None = None
+    seasons: list[StrictInt] | None = Field(default=None, min_length=1, max_length=100)
+    all_seasons: StrictBool = False
     conversation_history: list[ConversationMessage] = Field(
         default_factory=list,
         max_length=10,
@@ -153,11 +163,67 @@ def investigate(request: InvestigationRequest) -> dict:
             status_code=422, detail="Continuation requires acquisition intent"
         )
 
+    if request.media_type == "tv":
+        if request.intent != "acquire":
+            raise HTTPException(
+                status_code=422, detail="TV acquisition requires explicit intent"
+            )
+        try:
+            validate_seasons(request.seasons, request.all_seasons)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        try:
+            if request.continuation_id is not None:
+                outcome = continue_tv_request(
+                    request.continuation_id,
+                    request.question,
+                    year=request.year,
+                    seasons=request.seasons,
+                    all_seasons=request.all_seasons,
+                    storage=seerr_storage,
+                )
+            elif request.title and request.title.strip():
+                outcome = prepare_tv_request(
+                    request.title,
+                    request.year,
+                    seasons=request.seasons,
+                    all_seasons=request.all_seasons,
+                    storage=seerr_storage,
+                )
+            else:
+                return {
+                    "answer": "Provide the TV series title. No request was submitted.",
+                    "completed": True,
+                    "tool_calls": 0,
+                    "observations": [],
+                }
+        except TVContinuationError:
+            raise HTTPException(
+                status_code=400, detail="Invalid, expired or consumed TV continuation"
+            ) from None
+        except RuntimeError:
+            return {
+                "answer": "TV availability could not be verified. No request was submitted.",
+                "completed": False,
+                "tool_calls": 0,
+                "observations": [],
+            }
+        return tv_result(outcome)
+    if request.seasons is not None or request.all_seasons:
+        raise HTTPException(
+            status_code=422, detail="Season selection requires media_type=tv"
+        )
+
     if request.continuation_id is not None:
         record = seerr_storage.get_continuation(request.continuation_id)
         if record is None:
             raise HTTPException(
                 status_code=400, detail="Invalid or expired continuation"
+            )
+        if record.get("context", {}).get("media_type") == "tv":
+            raise HTTPException(
+                status_code=422,
+                detail="Use the TV acquisition tool for this continuation",
             )
         question = request.question.strip().lower()
         candidates = record.get("candidates", [])

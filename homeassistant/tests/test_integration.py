@@ -35,7 +35,7 @@ async def test_setup_registers_without_network_and_unload_preserves_assist(hass,
     apis = {api.id for api in llm.async_get_apis(hass)}
     assert api_id in apis
     instance = await llm.async_get_api(hass, api_id, context)
-    assert len(instance.tools) == 2
+    assert len(instance.tools) == 3
     assert instance.tools[0].integration == DOMAIN
     assert instance.tools[0].annotations.read_only is True
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -266,3 +266,73 @@ async def test_acquisition_schema_requires_title_and_reports_missing_title(hass,
         ask.assert_awaited_once_with(
             "Please acquire the movie Example Film", intent="acquire", title="Example Film"
         )
+
+
+async def test_tv_schema_and_continuation_through_registered_api(hass, entry, context, evidence):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_tv"))
+    from homeassistant.components.ollama.entity import _format_tool
+
+    spec = _format_tool(tool, api.custom_serializer)["function"]["parameters"]
+    assert set(spec["required"]) == {"question", "title"}
+    assert spec["properties"]["seasons"]["type"] == "array"
+    assert spec["properties"]["seasons"]["items"]["type"] == "integer"
+    assert spec["properties"]["all_seasons"]["type"] == "boolean"
+    assert tool.annotations.read_only is False
+    assert tool.annotations.idempotent is False
+    identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
+    evidence["continuation_id"] = identifier
+    with patch.object(entry.runtime_data, "async_ask", new_callable=AsyncMock) as ask:
+        ask.return_value = bounded_result(evidence, "test-only-credential")
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={"question": "get Example Series", "title": "Example Series"},
+            )
+        )
+        assert result.data["continuation_id"] == identifier
+        ask.assert_awaited_once_with(
+            "get Example Series", intent="acquire", media_type="tv", title="Example Series"
+        )
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={
+                    "question": "season 2",
+                    "title": "Example Series",
+                    "seasons": [2],
+                    "continuation_id": identifier,
+                },
+            )
+        )
+        assert not result.error
+        ask.assert_awaited_with(
+            "season 2",
+            intent="acquire",
+            media_type="tv",
+            title="Example Series",
+            seasons=[2],
+            continuation_id=identifier,
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"question": "get Example Series"},
+        {"question": "get it", "title": None},
+        {"question": "get it", "title": "Example Series", "seasons": [True]},
+        {"question": "get it", "title": "Example Series", "seasons": [2], "all_seasons": True},
+        {"question": "get it", "title": "Example Series", "media_id": 100},
+    ],
+)
+async def test_tv_invalid_arguments_never_reach_backend(hass, entry, context, fields):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_tv"))
+    with patch.object(entry.runtime_data, "async_ask") as ask:
+        result = await api.async_call_tool(llm.ToolInput(tool_name=tool.name, tool_args=fields))
+    assert result.error
+    assert "canonical TV title" in result.data["error"]
+    ask.assert_not_called()

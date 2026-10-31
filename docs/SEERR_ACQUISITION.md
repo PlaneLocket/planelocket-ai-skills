@@ -3,7 +3,8 @@
 HAL exposes two distinct tools: `ask_household` explicitly sends
 `intent=investigate` and remains read-only; `acquire_movie` is write-capable and
 requires an explicit user acquisition request. Device control still uses Assist.
-This workflow supports movies; television acquisition is not implemented.
+TV season acquisition is available through the separate `acquire_tv` tool; see
+[TV acquisition](TV_ACQUISITION.md) for explicit season scope and rollout details.
 
 ## Contract
 

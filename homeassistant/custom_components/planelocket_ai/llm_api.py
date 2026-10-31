@@ -7,7 +7,7 @@ import probatio
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 
-from .client import PlaneLocketError, validate_acquisition, validate_question
+from .client import PlaneLocketError, validate_acquisition, validate_question, validate_tv_scope
 from .const import DOMAIN
 
 if TYPE_CHECKING:
@@ -33,7 +33,19 @@ Always include title as a separate argument; putting it only in question is insu
 On the follow-up, call acquire_movie with the original title, that exact continuation_id,
 the user's reply as question, and the selected year when known. Never invent an ID or reuse
 one from another conversation. Do not substitute a new title search for a pending
-selection. Report the actual outcome; if not submitted, say so explicitly."""
+selection. Report the actual outcome; if not submitted, say so explicitly.
+For an explicit request to acquire a TV show, use acquire_tv, not acquire_movie.
+Always send the canonical show title and its premiere year separately when known.
+Send seasons as a list of season numbers only when the user specifies them, or
+all_seasons=true only for an explicit request for all seasons/the whole series.
+If no season scope was given, omit both fields and ask the returned clarification.
+On TV follow-ups, use acquire_tv with the returned continuation_id and original title;
+include the selected premiere year or seasons as appropriate. Never put a season
+number in year. Season 0 means specials and must be explicitly selected. All seasons
+means the regular seasons currently listed; it does not promise future seasons.
+Individual episode acquisition is unsupported; do not expand an episode request
+to a whole season. Report actual available/requested/missing seasons from results.
+Never promise a submission when automatic acquisition is disabled or status is uncertain."""
 
 ERROR_MESSAGES = {
     "invalid_auth": (
@@ -64,7 +76,11 @@ class PlaneLocketAPI(llm.API):
             api=self,
             api_prompt=PROMPT,
             llm_context=llm_context,
-            tools=[AskHouseholdTool(self.entry), AcquireMovieTool(self.entry)],
+            tools=[
+                AskHouseholdTool(self.entry),
+                AcquireMovieTool(self.entry),
+                AcquireTVTool(self.entry),
+            ],
         )
 
 
@@ -169,6 +185,72 @@ class AcquireMovieTool(AskHouseholdTool):
                     "Invalid acquisition arguments. Provide a nonempty question (max 2000 "
                     "characters) and title (max 500 characters); year must be an integer "
                     "from 1800 to 2199, and continuation_id must be the exact returned UUID."
+                )
+            return llm.ToolResult(data={"error": message, "code": err.code}, error=True)
+        return llm.ToolResult(data=result, error=not result["completed"])
+
+
+class AcquireTVTool(AskHouseholdTool):
+    """Request specific TV seasons with explicit scope and typed continuation state."""
+
+    name = "acquire_tv"
+    title = "Acquire TV seasons"
+    description = (
+        "Acquire TV shows only on explicit user request. Required: question and title "
+        "(canonical series name). year is the show's premiere year, not a season number. "
+        "seasons is a list of explicitly requested season numbers; all_seasons=true only "
+        "when the user requests the whole series. Omit scope to ask which seasons. "
+        "Follow-ups must repeat title and the exact returned continuation_id. "
+        "Specials require explicit season 0. Individual episodes are unsupported. "
+        "Can submit to Seerr when server policy permits; report actual submission status."
+    )
+    parameters = probatio.Schema(
+        {
+            probatio.Required("question"): str,
+            probatio.Required("title"): str,
+            probatio.Optional("year"): int,
+            probatio.Optional("seasons"): [int],
+            probatio.Optional("all_seasons"): bool,
+            probatio.Optional("continuation_id"): str,
+        }
+    )
+    annotations = llm.ToolAnnotations(
+        read_only=False, destructive=False, idempotent=False, open_world=True
+    )
+
+    async def async_call(self, hass, tool_input, llm_context):
+        """Forward validated TV intent, season scope and server-issued identity."""
+        try:
+            args = tool_input.tool_args
+            if not {"question", "title"} <= set(args) or set(args) - {
+                "question",
+                "title",
+                "year",
+                "seasons",
+                "all_seasons",
+                "continuation_id",
+            }:
+                raise PlaneLocketError("invalid_question")
+            question = validate_question(args["question"])
+            if args["title"] is None:
+                raise PlaneLocketError("invalid_question")
+            fields = validate_acquisition(
+                args["title"], args.get("year"), args.get("continuation_id")
+            )
+            fields.update(validate_tv_scope(args.get("seasons"), args.get("all_seasons", False)))
+            result = await self._entry.runtime_data.async_ask(
+                question, intent="acquire", media_type="tv", **fields
+            )
+        except PlaneLocketError as err:
+            if err.code == "invalid_auth":
+                self._entry.async_start_reauth(hass)
+            message = ERROR_MESSAGES[err.code]
+            if err.code == "invalid_question":
+                message = (
+                    "Provide question and canonical TV title separately; optional year is the "
+                    "premiere year. Choose seasons as distinct integers 0–999 (max 100) OR "
+                    "all_seasons=true, not both. Omit scope if the user has not selected it. "
+                    "continuation_id must be the exact returned UUID."
                 )
             return llm.ToolResult(data={"error": message, "code": err.code}, error=True)
         return llm.ToolResult(data=result, error=not result["completed"])
