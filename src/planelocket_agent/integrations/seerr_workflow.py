@@ -1,5 +1,7 @@
 """Coordinate Seerr movie requests."""
 
+import re
+
 from planelocket_agent.integrations.seerr import (
     get_media_details,
     request_movie,
@@ -15,8 +17,21 @@ def prepare_movie_request(
     title: str,
     year: int | None = None,
     storage: SeerrRequestStorage | None = None,
+    expected_media_id: int | None = None,
 ) -> dict:
     """Resolve a movie and determine whether acquisition is permitted."""
+
+    # Split a display title from its release year before asking Seerr to search.
+    match = re.fullmatch(r"(.+?)\s+\(((?:19|20)\d{2})\)", title.strip())
+    if match:
+        if year is not None and year != int(match[2]):
+            return {
+                "authorized": False,
+                "reason": "conflicting_year",
+                "inspection": {},
+                "continuation_id": None,
+            }
+        title, year = match[1], int(match[2])
 
     inspection = inspect_media(
         title,
@@ -25,12 +40,24 @@ def prepare_movie_request(
     )
 
     if (
+        expected_media_id is not None
+        and inspection.get("resolved")
+        and inspection["media"]["id"] != expected_media_id
+    ):
+        return {
+            "authorized": False,
+            "reason": "media_identity_changed",
+            "inspection": inspection,
+            "continuation_id": None,
+        }
+
+    if (
         not inspection["resolved"]
         and inspection["reason"] == "no_unique_match"
         and len(inspection.get("candidates", [])) > 1
         and storage is not None
     ):
-        continuation_id = storage.create_continuation(title)
+        continuation_id = storage.create_continuation(title, inspection["candidates"])
     else:
         continuation_id = None
 

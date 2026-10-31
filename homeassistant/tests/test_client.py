@@ -268,3 +268,37 @@ def test_incomplete_unicode_result_is_serializable_and_bounded(evidence):
     result = bounded_result(evidence, TOKEN)
     assert len(json_dumps(result).encode()) <= MAX_TOOL_RESULT_BYTES
     assert "error" in result
+
+
+async def test_acquisition_transport_preserves_state_when_evidence_is_omitted(transport, evidence):
+    identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
+    evidence["continuation_id"] = identifier
+    evidence["observations"] = [{"large": "x" * MAX_TOOL_RESULT_BYTES}]
+    transport.respond(evidence)
+    result = await transport.client.async_ask(
+        "get Example Film", intent="acquire", title="Example Film"
+    )
+    assert result["continuation_id"] == identifier
+    assert result["observations_omitted"] == 1
+    assert len(json.dumps(result).encode()) <= MAX_TOOL_RESULT_BYTES
+    assert transport.calls[-1][2]["json"] == {
+        "question": "get Example Film",
+        "intent": "acquire",
+        "title": "Example Film",
+    }
+    await transport.client.async_ask(
+        "2026", intent="acquire", continuation_id=identifier, year=2026
+    )
+    assert transport.calls[-1][2]["json"] == {
+        "question": "2026",
+        "intent": "acquire",
+        "continuation_id": identifier,
+        "year": 2026,
+    }
+
+
+@pytest.mark.parametrize("identifier", ["x" * 10000, 123, {}, "invalid"])
+def test_invalid_continuation_is_not_returned(evidence, identifier):
+    evidence["continuation_id"] = identifier
+    with pytest.raises(PlaneLocketError, match="invalid_response"):
+        bounded_result(evidence, TOKEN)

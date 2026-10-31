@@ -1,5 +1,6 @@
 """Persistent storage for Seerr acquisition requests."""
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -69,7 +70,20 @@ class SeerrRequestStorage:
                 """
             )
 
-    def create_continuation(self, title: str) -> str:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(acquisition_continuations)"
+                )
+            }
+            if "candidates" not in columns:
+                connection.execute(
+                    "ALTER TABLE acquisition_continuations ADD COLUMN candidates TEXT NOT NULL DEFAULT '[]'"
+                )
+
+    def create_continuation(
+        self, title: str, candidates: list[dict] | None = None
+    ) -> str:
         """Remember an acquisition awaiting movie disambiguation."""
 
         title = title.strip()
@@ -91,15 +105,16 @@ class SeerrRequestStorage:
                     id,
                     title,
                     created_at,
-                    expires_at
+                    expires_at, candidates
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     continuation_id,
                     title,
                     now.isoformat(),
                     expires_at.isoformat(),
+                    json.dumps(candidates or []),
                 ),
             )
 
@@ -115,7 +130,7 @@ class SeerrRequestStorage:
 
             row = connection.execute(
                 """
-                SELECT id, title, created_at, expires_at
+                SELECT id, title, created_at, expires_at, candidates
                 FROM acquisition_continuations
                 WHERE id = ?
                 AND expires_at > ?
@@ -123,7 +138,12 @@ class SeerrRequestStorage:
                 (continuation_id, now),
             ).fetchone()
 
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        record = dict(row)
+        if "candidates" in record:
+            record["candidates"] = json.loads(record["candidates"])
+        return record
 
     def consume_continuation(self, continuation_id: str) -> dict | None:
         """Atomically retrieve and consume an unexpired continuation."""
@@ -141,12 +161,17 @@ class SeerrRequestStorage:
                 DELETE FROM acquisition_continuations
                 WHERE id = ?
                 AND expires_at > ?
-                RETURNING id, title, created_at, expires_at
+                RETURNING id, title, created_at, expires_at, candidates
                 """,
                 (continuation_id, now),
             ).fetchone()
 
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        record = dict(row)
+        if "candidates" in record:
+            record["candidates"] = json.loads(record["candidates"])
+        return record
 
     def create_pending(self, media_id: int, title: str) -> str:
         """Create a pending movie request and return its identifier."""

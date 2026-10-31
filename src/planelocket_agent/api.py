@@ -72,7 +72,10 @@ class ConversationMessage(BaseModel):
 class InvestigationRequest(BaseModel):
     """A natural-language question submitted to PlaneLocket AI."""
 
-    question: str
+    question: str = Field(min_length=1, max_length=2000)
+    intent: Literal["acquire", "investigate"] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    year: int | None = Field(default=None, ge=1800, le=2199)
     continuation_id: str | None = None
     conversation_history: list[ConversationMessage] = Field(
         default_factory=list,
@@ -99,47 +102,140 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def acquisition_result(outcome: dict) -> dict:
+    """Describe workflow evidence without letting a model invent submission."""
+    inspection = outcome["inspection"]
+    candidates = inspection.get("candidates", [])
+    if outcome.get("continuation_id"):
+        choices = ", ".join(
+            f"{item['title']} ({item.get('year') or 'unknown year'} movie)"
+            for item in candidates
+        )
+        answer = f"Which version: {choices}? No request was submitted."
+    elif outcome.get("submission", {}).get("submitted"):
+        answer = f"Requested {outcome['title']}."
+    else:
+        media = inspection.get("media") or {}
+        title = media.get("title") or "Movie"
+        year = (media.get("releaseDate") or "")[:4]
+        identity = f"{title} ({year})" if year else title
+        reasons = {
+            "auto_request_disabled": "automatic acquisition is disabled",
+            "already_available": "already available",
+            "already_requested": "already requested",
+            "already_in_progress": "already in progress",
+            "no_unique_match": "no unique matching movie release",
+            "search_too_broad": "search was incomplete; narrow the title",
+            "conflicting_year": "conflicting release years",
+            "media_identity_changed": "candidate identity changed; start a new search",
+        }
+        reason = (
+            outcome.get("reason")
+            or outcome.get("submission", {}).get("reason")
+            or "not requestable"
+        )
+        answer = f"{identity}: {reasons.get(reason, reason)}. No request was submitted."
+    return {
+        "answer": answer,
+        "completed": True,
+        "tool_calls": 0,
+        "observations": [outcome],
+        "continuation_id": outcome.get("continuation_id"),
+    }
+
+
 @app.post("/investigate", dependencies=[Depends(require_api_token)])
 def investigate(request: InvestigationRequest) -> dict:
     """Investigate a question using the PlaneLocket AI agent."""
 
+    if request.continuation_id is not None and request.intent == "investigate":
+        raise HTTPException(
+            status_code=422, detail="Continuation requires acquisition intent"
+        )
+
     if request.continuation_id is not None:
         record = seerr_storage.get_continuation(request.continuation_id)
         if record is None:
-            raise HTTPException(status_code=400, detail="Invalid or expired continuation")
-
-        question = request.question.strip().lower()
-        if question in {"the new one", "new one", "the newest", "newest", "latest"}:
-            resolution = find_media(record["title"], media_type="movie")
-            candidates = resolution.get("candidates", [])
-            years = sorted(
-                {int(item["year"]) for item in candidates if item.get("year")}
+            raise HTTPException(
+                status_code=400, detail="Invalid or expired continuation"
             )
-            if not years:
-                return {"answer": "I couldn't identify a newest release.", "completed": False,
-                        "tool_calls": 0, "observations": []}
-            year = years[-1]
-            if sum(int(item["year"]) == year for item in candidates) != 1:
-                return {"answer": "Multiple releases share the newest year.", "completed": False,
-                        "tool_calls": 0, "observations": []}
-        elif re.fullmatch(r"(?:the )?(?:19|20)\\d{2}(?: version)?", question):
-            year = int(re.search(r"(?:19|20)\\d{2}", question).group())
-        else:
-            return {"answer": "Please specify the release year or say 'the new one'.",
-                    "completed": False, "tool_calls": 0, "observations": []}
-
+        question = request.question.strip().lower()
+        candidates = record.get("candidates", [])
+        if not candidates:  # Continuations issued by older servers.
+            candidates = find_media(record["title"], media_type="movie").get(
+                "candidates", []
+            )
+        year = request.year
+        if year is None and question in {
+            "the new one",
+            "new one",
+            "the newest",
+            "newest",
+            "latest",
+        }:
+            years = [
+                int(item["year"])
+                for item in candidates
+                if str(item.get("year", "")).isdigit()
+            ]
+            year = max(years) if years else None
+        if year is None:
+            match = re.fullmatch(r"(?:the )?((?:19|20)\d{2})(?: version)?", question)
+            year = int(match[1]) if match else None
+        selected = [item for item in candidates if str(item.get("year")) == str(year)]
+        if year is None or len(selected) != 1:
+            return {
+                "answer": "Please choose one unique movie release year from the candidates. No request was submitted.",
+                "completed": True,
+                "tool_calls": 0,
+                "observations": [],
+                "continuation_id": request.continuation_id,
+            }
         record = seerr_storage.consume_continuation(request.continuation_id)
         if record is None:
             raise HTTPException(status_code=409, detail="Continuation already consumed")
-        outcome = prepare_movie_request(title=record["title"], year=year,
-                                        storage=seerr_storage)
-        submitted = outcome.get("submission", {}).get("submitted", False)
-        answer = (
-            f"Requested {outcome['title']} ({year})." if submitted
-            else f"Evaluated {record['title']} ({year}): {outcome['reason'] or 'not submitted'}."
+        return acquisition_result(
+            prepare_movie_request(
+                title=record["title"],
+                year=year,
+                storage=seerr_storage,
+                expected_media_id=selected[0].get("media_id"),
+            )
         )
-        return {"answer": answer, "completed": True, "tool_calls": 0,
-                "observations": [outcome]}
+
+    acquisition_requested = request.intent == "acquire" or (
+        request.intent is None
+        and bool(
+            re.search(
+                r"\b(?:acquire|download|request|add to (?:my |the )?library)\b"
+                r"|^\s*(?:(?:please|go)\s+)*(?:get|add)\s+",
+                request.question,
+                flags=re.IGNORECASE,
+            )
+        )
+    )
+    if acquisition_requested:
+        title = request.title
+        if title is None:
+            # Compatibility for older question-only clients. Complex phrasing
+            # asks for clarification rather than relying on arbitrary tool choice.
+            match = re.fullmatch(
+                r"\s*(?:(?:please|go)\s+)*(?:get|acquire|download|request|add)\s+"
+                r"(?:(?:the\s+)?movie\s+)?(.+?)(?:\s+for the household library)?[.!]?\s*",
+                request.question,
+                flags=re.IGNORECASE,
+            )
+            title = match[1].strip().strip('"') if match else None
+        if not title:
+            return {
+                "answer": "Which movie title would you like to acquire? No request was submitted.",
+                "completed": True,
+                "tool_calls": 0,
+                "observations": [],
+            }
+        return acquisition_result(
+            prepare_movie_request(title=title, year=request.year, storage=seerr_storage)
+        )
 
     agent = PlaneLocketAgent(
         skills_directory=Path("skills"),
@@ -147,24 +243,21 @@ def investigate(request: InvestigationRequest) -> dict:
     )
 
     dispatcher = ToolDispatcher(LinuxDiagnostics())
-    acquisition_requested = bool(
-        re.match(
-            r"^\s*(?:(?:please|go)\s+)*(?:get|request|download|add)\s+",
+    try:
+        result = agent.investigate(
             request.question,
-            flags=re.IGNORECASE,
+            dispatcher,
+            conversation_history=[
+                message.model_dump() for message in request.conversation_history
+            ],
         )
-    )
-
-    if acquisition_requested:
-        dispatcher.bind_media_requests(seerr_storage)
-
-    result = agent.investigate(
-        request.question,
-        dispatcher,
-        conversation_history=[
-            message.model_dump() for message in request.conversation_history
-        ],
-    )
+    except ValueError:
+        return {
+            "answer": "The model returned an invalid or incomplete response. Please try again.",
+            "completed": False,
+            "tool_calls": 0,
+            "observations": [],
+        }
 
     continuation_ids = [
         observation.get("result", {}).get("continuation_id")

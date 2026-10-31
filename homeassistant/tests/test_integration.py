@@ -35,7 +35,7 @@ async def test_setup_registers_without_network_and_unload_preserves_assist(hass,
     apis = {api.id for api in llm.async_get_apis(hass)}
     assert api_id in apis
     instance = await llm.async_get_api(hass, api_id, context)
-    assert len(instance.tools) == 1
+    assert len(instance.tools) == 2
     assert instance.tools[0].integration == DOMAIN
     assert instance.tools[0].annotations.read_only is True
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -113,7 +113,9 @@ async def test_acceptance_evidence_through_registered_api(hass, entry, context, 
 
     spec = _format_tool(api.tools[0], api.custom_serializer)
     assert spec["function"]["parameters"]["properties"]["question"]["type"] == "string"
-    ask.assert_awaited_once_with("What movies starring Harrison Ford do we have?")
+    ask.assert_awaited_once_with(
+        "What movies starring Harrison Ford do we have?", intent="investigate"
+    )
 
 
 @pytest.mark.parametrize(
@@ -171,5 +173,61 @@ async def test_invalid_tool_arguments_never_reach_backend(hass, entry, context, 
         result = await api.async_call_tool(
             llm.ToolInput(tool_name=api.tools[0].name, tool_args=arguments)
         )
+    assert result.error
+    ask.assert_not_called()
+
+
+async def test_movie_acquisition_tool_supports_followup(hass, entry, context, evidence):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_movie"))
+    assert tool.annotations.read_only is False
+    assert tool.annotations.idempotent is False
+    from homeassistant.components.ollama.entity import _format_tool
+
+    spec = _format_tool(tool, api.custom_serializer)
+    assert {"question", "title", "year", "continuation_id"} == set(
+        spec["function"]["parameters"]["properties"]
+    )
+    identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
+    evidence["continuation_id"] = identifier
+    with patch.object(entry.runtime_data, "async_ask", new_callable=AsyncMock) as ask:
+        ask.return_value = bounded_result(evidence, "test-only-credential")
+        first = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={"question": "Get Example Film", "title": "Example Film"},
+            )
+        )
+        assert first.data["continuation_id"] == identifier
+        followup = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={
+                    "question": "2026",
+                    "year": 2026,
+                    "continuation_id": first.data["continuation_id"],
+                },
+            )
+        )
+        assert not followup.error
+        ask.assert_awaited_with("2026", intent="acquire", year=2026, continuation_id=identifier)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"question": "get it"},
+        {"question": "get it", "title": "Example", "year": True},
+        {"question": "get it", "continuation_id": "invented"},
+        {"question": "get it", "title": "Example", "url": "https://other.test"},
+    ],
+)
+async def test_invalid_acquisition_does_not_call_backend(hass, entry, context, fields):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_movie"))
+    with patch.object(entry.runtime_data, "async_ask") as ask:
+        result = await api.async_call_tool(llm.ToolInput(tool_name=tool.name, tool_args=fields))
     assert result.error
     ask.assert_not_called()

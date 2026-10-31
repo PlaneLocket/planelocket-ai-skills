@@ -8,6 +8,7 @@ import asyncio
 import json
 import math
 from typing import Any
+from uuid import UUID
 
 import aiohttp
 from yarl import URL
@@ -67,6 +68,30 @@ def validate_question(value: Any) -> str:
     return value.strip()
 
 
+def validate_acquisition(title=None, year=None, continuation_id=None):
+    """Validate structured acquisition arguments before sending any request."""
+    if title is not None and (not isinstance(title, str) or not 1 <= len(title.strip()) <= 500):
+        raise PlaneLocketError("invalid_question")
+    if year is not None and (type(year) is not int or not 1800 <= year <= 2199):
+        raise PlaneLocketError("invalid_question")
+    if continuation_id is not None:
+        try:
+            if (
+                not isinstance(continuation_id, str)
+                or str(UUID(continuation_id)) != continuation_id
+            ):
+                raise ValueError
+        except ValueError, TypeError, AttributeError:
+            raise PlaneLocketError("invalid_question") from None
+    if title is None and continuation_id is None:
+        raise PlaneLocketError("invalid_question")
+    return {
+        key: value
+        for key, value in {"title": title, "year": year, "continuation_id": continuation_id}.items()
+        if value is not None
+    }
+
+
 def _json_size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
@@ -115,6 +140,13 @@ def bounded_result(payload: Any, token: str) -> dict[str, Any]:
             "answer_truncated": len(answer) > MAX_ANSWER_CHARS,
             "observations_omitted": len(observations),
         }
+        continuation_id = payload.get("continuation_id")
+        if continuation_id is not None:
+            try:
+                validate_acquisition(continuation_id=continuation_id)
+            except PlaneLocketError:
+                raise PlaneLocketError("invalid_response") from None
+            result["continuation_id"] = _safe_json(continuation_id, token)
         if not result["completed"]:
             result["error"] = "Investigation incomplete. Do not present this as a verified answer."
         # UTF-8 may need four bytes per character. Reserve room for the envelope.
@@ -148,22 +180,39 @@ class PlaneLocketClient:
         if not isinstance(payload, dict) or payload.get("status") != "ok":
             raise PlaneLocketError("invalid_response")
 
-    async def async_ask(self, question: str) -> dict[str, Any]:
+    async def async_ask(
+        self,
+        question: str,
+        *,
+        intent: str | None = None,
+        title: str | None = None,
+        year: int | None = None,
+        continuation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Forward one question; never retry a model-backed POST automatically."""
         question = validate_question(question)
+        body = {"question": question}
+        if intent is not None:
+            if intent not in {"acquire", "investigate"}:
+                raise PlaneLocketError("invalid_question")
+            body["intent"] = intent
+        if intent == "acquire":
+            body.update(validate_acquisition(title, year, continuation_id))
+        elif any(value is not None for value in (title, year, continuation_id)):
+            raise PlaneLocketError("invalid_question")
         payload = await self._async_request(
-            "POST", "/investigate", deadline=REQUEST_TIMEOUT, question=question
+            "POST", "/investigate", deadline=REQUEST_TIMEOUT, body=body
         )
         return bounded_result(payload, self._token)
 
     async def _async_request(
-        self, method: str, path: str, *, deadline: float, question: str | None = None
+        self, method: str, path: str, *, deadline: float, body: dict | None = None
     ) -> Any:
         headers = {"Accept": "application/json"}
         kwargs: dict[str, Any] = {}
-        if question is not None:
+        if body is not None:
             headers["Authorization"] = f"Bearer {self._token}"
-            kwargs["json"] = {"question": question}
+            kwargs["json"] = body
         try:
             # Includes streamed body consumption, not just response headers.
             async with asyncio.timeout(deadline):
