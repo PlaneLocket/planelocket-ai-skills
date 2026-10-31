@@ -88,3 +88,28 @@ an empty-list default; old code can still read the original columns. No existing
 request records are removed. Outstanding new continuations may require a fresh
 search after rollback. No deployed validation was performed from the cloud test
 workspace.
+
+## Broad title searches
+
+Ordinary Seerr searches can include many unrelated substring matches. The search
+collector supports up to 2,000 results / 100 pages, using batches of at most six
+parallel read-only GETs. It checks a 40-second collection budget before scheduling
+another batch and after collection; each GET has a socket timeout of at most ten
+seconds, reduced to the remaining budget. Already-running requests are drained
+before returning. This is a bounded collection budget, not a hard wall-clock
+transport deadline.
+
+All pages must agree on counts and page numbers; the collected count must match,
+and repeated media identities are rejected. A failed, changing, over-limit, or
+expired search returns no usable results with `complete=false`. The resolver
+therefore cannot authorize from an incomplete set, even if page one contains an
+exact title/year match. This preserves late-page ambiguity checks.
+
+Seerr's `year:` provider is deliberately not used as proof of a complete search:
+its implementation combines only the first movie and TV result pages and reports
+a single page. A returned set of 20 movies can hide additional movie matches.
+See [Seerr search provider implementation](https://github.com/seerr-team/seerr/blob/develop/server/lib/search.ts).
+The title and year are still matched separately by the local resolver after full
+ordinary-search collection. No cap or submission-policy setting is changed on the
+running host until deployment; `SEERR_AUTO_REQUEST=false` remains required for
+live rollout checks.
