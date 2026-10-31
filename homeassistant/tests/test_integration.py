@@ -266,6 +266,9 @@ async def test_acquisition_schema_requires_title_and_reports_missing_title(hass,
                 "partial": False,
             },
         }
+        # Corrected arguments are allowed on a new user turn, not an automatic
+        # retry after the previous turn's terminal validation outcome.
+        api = await llm.async_get_api(hass, api_id, context)
         result = await api.async_call_tool(
             llm.ToolInput(
                 tool_name=tool.name,

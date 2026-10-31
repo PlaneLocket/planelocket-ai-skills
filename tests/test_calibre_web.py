@@ -198,6 +198,27 @@ def test_wrong_authenticated_account_rejected(remote):
         client.search_library("Example")
 
 
+def test_natural_combined_query_reads_authenticated_visible_catalog(remote):
+    state, client = remote
+    result = client.search_catalog("Example Book by Author")
+    assert result["complete"]
+    assert result["total"] == 1
+    assert result["items"][0]["title"] == "Example Book"
+    assert client.search_catalog("Example Book by Someone Else")["total"] == 0
+    assert all(
+        call[1] in {"/api/v1/auth/csrf", "/api/v1/auth/login", "/api/v1/books"}
+        for call in state["calls"]
+    )
+
+
+def test_empty_match_in_partial_catalog_is_not_verified_absence(remote):
+    state, client = remote
+    state["count"] = 501
+    result = client.search_catalog("Missing Author")
+    assert not result["complete"]
+    assert not result["items"]
+
+
 @pytest.mark.parametrize(
     "url",
     [

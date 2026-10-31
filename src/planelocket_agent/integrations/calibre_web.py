@@ -4,8 +4,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import threading
 import time
+import unicodedata
 from contextlib import contextmanager
 from functools import lru_cache
 from http.cookiejar import CookieJar
@@ -259,11 +261,44 @@ class CalibreWebClient:
 
     def search_library(self, query):
         query = text(query)
+        return self._library_pages(query)
+
+    def search_catalog(self, query):
+        """Match words across visible title/author/series metadata, not one field.
+
+        CWNG's search string is not a natural-language title/author expression.
+        Use a bounded inventory read so an empty phrase search cannot hide a
+        known book. Incomplete inventory never establishes absence.
+        """
+
+        def words(value):
+            value = unicodedata.normalize("NFKC", value).casefold()
+            return re.findall(r"\w+", value.replace("'", "").replace("’", ""))
+
+        tokens = [word for word in words(text(query)) if word != "by"]
+        if not tokens:
+            raise BookError("invalid_arguments")
+        result = self._library_pages(None)
+        matches = []
+        for item in result["items"]:
+            metadata = words(
+                " ".join([item["title"], *item["authors"], item["series"] or ""])
+            )
+            if all(token in metadata for token in tokens):
+                matches.append(item)
+        return {"items": matches, "total": len(matches), "complete": result["complete"]}
+
+    def _library_pages(self, query):
         with self.session():
             rows, total = {}, None
             for page in range(1, MAX_LIBRARY_RESULTS // 50 + 1):
                 result = self.get(
-                    "/books", {"search": query, "page": page, "per_page": 50}
+                    "/books",
+                    {
+                        "page": page,
+                        "per_page": 50,
+                        **({"search": query} if query else {}),
+                    },
                 )
                 if (
                     not isinstance(result, dict)
@@ -298,11 +333,7 @@ class CalibreWebClient:
                         "total": total,
                         "complete": True,
                     }
-                if (
-                    len(rows) > total
-                    or not result["items"]
-                    or total > MAX_LIBRARY_RESULTS
-                ):
+                if len(rows) > total or not result["items"]:
                     break
             return {"items": list(rows.values()), "total": total, "complete": False}
 

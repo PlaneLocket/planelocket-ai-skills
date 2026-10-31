@@ -34,6 +34,7 @@ from planelocket_agent.integrations.seerr_workflow import (
     confirm_movie_request,
     prepare_movie_request,
 )
+from planelocket_agent.interaction import capabilities, classify_action
 from planelocket_agent.logging_config import configure_logging
 from planelocket_agent.ollama import OllamaClient
 from planelocket_agent.result_contract import acquisition_response, controlled
@@ -134,6 +135,7 @@ class InvestigationRequest(BaseModel):
     """A natural-language question submitted to PlaneLocket AI."""
 
     question: str = Field(min_length=1, max_length=2000)
+    user_question: str | None = Field(default=None, min_length=1, max_length=2000)
     intent: Literal["acquire", "investigate"] | None = None
     title: str | None = Field(default=None, min_length=1, max_length=500)
     year: int | None = Field(default=None, ge=1800, le=2199)
@@ -150,11 +152,19 @@ class InvestigationRequest(BaseModel):
 class BookSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=500)
+    user_question: str | None = Field(default=None, min_length=1, max_length=2000)
+    conversation_history: list[ConversationMessage] = Field(
+        default_factory=list, max_length=10
+    )
 
 
 class BookAcquisitionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=2000)
+    user_question: str | None = Field(default=None, min_length=1, max_length=2000)
+    conversation_history: list[ConversationMessage] = Field(
+        default_factory=list, max_length=10
+    )
     title: str = Field(min_length=1, max_length=500)
     author: str | None = Field(default=None, min_length=1, max_length=300)
     book_format: Literal["EPUB", "PDF", "MOBI"] | None = Field(
@@ -173,6 +183,9 @@ def search_book_library(request: BookSearchRequest) -> dict:
 @app.post("/books/acquire", dependencies=[Depends(require_api_token)])
 def acquire_book_offer(request: BookAcquisitionRequest) -> dict:
     """LazyLibrarian ebook requests are isolated from movie/TV policy."""
+    rerouted = resolve_action(request)
+    if rerouted is not None:
+        return rerouted
     return acquire_book(
         request.question,
         request.title,
@@ -203,6 +216,46 @@ class MediaPreparationRequest(BaseModel):
 def health() -> dict[str, str]:
     """Report whether the API is running."""
     return {"status": "ok"}
+
+
+@app.get("/capabilities", dependencies=[Depends(require_api_token)])
+def describe_capabilities():
+    return capabilities()
+
+
+def resolve_action(request):
+    """Resolve an acquisition tool call against the actual conversation turn.
+
+    Older direct API clients retain their explicit-intent contract. HA supplies
+    the original user turn separately from model-generated tool arguments.
+    """
+    if request.user_question is None:
+        return None
+    history = [item.model_dump() for item in request.conversation_history]
+    try:
+        action = classify_action(request.user_question, history)
+    except ValueError, TypeError, RuntimeError, OSError:
+        action = "unclear"
+    if action == "acquire":
+        return None
+    if action == "lookup":
+        result = _investigate(
+            InvestigationRequest(
+                question=request.user_question,
+                intent="investigate",
+                conversation_history=request.conversation_history,
+            )
+        )
+        return result if "control" in result else controlled(result)
+    return controlled(
+        {
+            "answer": "The requested action could not be established. No acquisition was attempted.",
+            "completed": False,
+            "tool_calls": 0,
+            "observations": [],
+        },
+        outcome="blocked",
+    )
 
 
 def acquisition_result(outcome: dict) -> dict:
@@ -445,6 +498,10 @@ def _investigate(request: InvestigationRequest) -> dict:
 
 @app.post("/investigate", dependencies=[Depends(require_api_token)])
 def investigate(request: InvestigationRequest) -> dict:
+    if request.intent == "acquire":
+        rerouted = resolve_action(request)
+        if rerouted is not None:
+            return rerouted
     result = _investigate(request)
     if "control" in result:
         return result

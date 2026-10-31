@@ -24,6 +24,27 @@ TOKEN = "test-only-credential"
 pytestmark = pytest.mark.usefixtures("socket_enabled")
 
 
+async def test_capability_metadata_uses_authenticated_bounded_get(transport):
+    transport.respond(
+        {"version": 1, "lookup_description": "Test records", "instructions": "Test instructions"}
+    )
+    # The global metadata fixture isolates registration; this test exercises real transport.
+    from unittest.mock import patch
+
+    from custom_components.planelocket_ai.client import PlaneLocketClient
+
+    with patch.object(PlaneLocketClient, "async_capabilities", new=ORIGINAL_CAPABILITIES):
+        result = await transport.client.async_capabilities()
+    assert result["lookup_description"] == "Test records"
+    method, url, kwargs = transport.calls[0]
+    assert method == "GET" and url == BASE + "/capabilities"
+    assert kwargs["headers"]["Authorization"] == "Bearer " + TOKEN
+    assert kwargs["timeout"].total == 2
+
+
+ORIGINAL_CAPABILITIES = PlaneLocketClient.async_capabilities
+
+
 @pytest.fixture
 async def transport(aiohttp_server):
     """Map the HTTPS test origin to a real local server; record transport options."""

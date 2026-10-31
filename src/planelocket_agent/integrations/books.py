@@ -129,7 +129,7 @@ def _failure(code, *, uncertain=False):
 
 def lookup_books(query):
     try:
-        result = get_library().search_library(text(query))
+        result = get_library().search_catalog(text(query))
         items = result["items"][:25]
         if not result["complete"]:
             answer = f"Partial CWNG library search: showing {len(items)} records visible to the service account; the search is incomplete."

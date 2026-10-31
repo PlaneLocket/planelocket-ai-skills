@@ -48,6 +48,8 @@ class Library:
             "complete": self.complete,
         }
 
+    search_catalog = search_library
+
 
 class LazyLibrarian:
     target = "ll-server-key"
