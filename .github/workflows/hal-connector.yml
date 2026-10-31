@@ -22,7 +22,7 @@ jobs:
         run: |
           python -m pip install -e . -r homeassistant/requirements-test.txt
       - name: Backend regression tests
-        run: SEERR_AUTO_REQUEST=false PYTHONPATH=src python -m pytest tests -q
+        run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 SEERR_AUTO_REQUEST=false PYTHONPATH=src python -m pytest tests -q
       - name: Home Assistant connector tests
         run: python -m pytest -c homeassistant/pytest.ini homeassistant/tests -q
       - name: Connector lint

@@ -55,7 +55,7 @@ unhandled value/JSON exception. No automatic HTTP POST retries are performed.
 All external Seerr and model services are mocked in regression tests:
 
 ```bash
-SEERR_AUTO_REQUEST=false .venv/bin/python -m pytest tests -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 SEERR_AUTO_REQUEST=false .venv/bin/python -m pytest tests -q
 .venv/bin/python -m pytest -c homeassistant/pytest.ini homeassistant/tests -q
 .venv/bin/ruff check --config homeassistant/ruff.toml homeassistant
 .venv/bin/ruff format --check --config homeassistant/ruff.toml homeassistant
