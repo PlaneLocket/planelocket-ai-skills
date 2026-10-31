@@ -5,14 +5,20 @@ import re
 import secrets
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from planelocket_agent.agent import PlaneLocketAgent
 from planelocket_agent.config import load_config
 from planelocket_agent.diagnostics.linux.backend import LinuxDiagnostics
+from planelocket_agent.integrations.books import (
+    acquire_book,
+    initialize_book_journal,
+    lookup_books,
+)
 from planelocket_agent.integrations.seerr_resolver import find_media
 from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
 from planelocket_agent.integrations.seerr_tv import (
@@ -36,6 +42,7 @@ seerr_storage = SeerrRequestStorage(
     Path(os.environ.get("SEERR_REQUEST_DB", "./data/seerr_requests.sqlite3"))
 )
 seerr_storage.initialize()
+initialize_book_journal(seerr_storage)
 
 app = FastAPI(
     title="PlaneLocket AI",
@@ -90,6 +97,45 @@ class InvestigationRequest(BaseModel):
     conversation_history: list[ConversationMessage] = Field(
         default_factory=list,
         max_length=10,
+    )
+
+
+class BookSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(min_length=1, max_length=500)
+
+
+class BookAcquisitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=2000)
+    title: str = Field(min_length=1, max_length=500)
+    author: str | None = Field(default=None, min_length=1, max_length=300)
+    book_format: Literal["EPUB", "PDF", "MOBI"] | None = Field(
+        default=None, alias="format"
+    )
+    continuation_id: UUID | None = None
+    choice: StrictInt | None = Field(default=None, ge=1, le=20)
+
+
+@app.post("/books/search", dependencies=[Depends(require_api_token)])
+def search_book_library(request: BookSearchRequest) -> dict:
+    """Read-only book lookup, independent of acquisition intent and model routing."""
+    return lookup_books(request.query)
+
+
+@app.post("/books/acquire", dependencies=[Depends(require_api_token)])
+def acquire_book_offer(request: BookAcquisitionRequest) -> dict:
+    """Explicit book acquisition is isolated from movie and TV policy."""
+    return acquire_book(
+        request.question,
+        request.title,
+        author=request.author,
+        book_format=request.book_format,
+        continuation_id=str(request.continuation_id)
+        if request.continuation_id
+        else None,
+        choice=request.choice,
+        storage=seerr_storage,
     )
 
 
@@ -220,10 +266,10 @@ def investigate(request: InvestigationRequest) -> dict:
             raise HTTPException(
                 status_code=400, detail="Invalid or expired continuation"
             )
-        if record.get("context", {}).get("media_type") == "tv":
+        if record.get("context", {}).get("media_type", "movie") != "movie":
             raise HTTPException(
                 status_code=422,
-                detail="Use the TV acquisition tool for this continuation",
+                detail="Use the matching acquisition tool for this continuation",
             )
         question = request.question.strip().lower()
         candidates = record.get("candidates", [])

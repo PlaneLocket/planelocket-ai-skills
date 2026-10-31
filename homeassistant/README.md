@@ -218,3 +218,14 @@ season 0. Keep automatic acquisition disabled during rollout.
 See [TV scope, API contract, deployment and rollback](../docs/TV_ACQUISITION.md).
 The update requires both `client.py` and `llm_api.py` on Frigg, plus the backend
 update on Kvasir; no dependency changes are needed.
+
+## Book library and acquisition
+
+`search_books` reads books visible to the dedicated Calibre-Web NextGen account.
+`acquire_book` requires an explicit acquisition request and a numbered offer
+selection; library lookup never creates a book job. Book policy is controlled by
+`CWNG_AUTO_REQUEST`, separately from movie/TV policy. It defaults to false.
+NextGen Book Sources and account access must be configured separately for jobs.
+
+See [book API, configuration, selection and rollout](../docs/BOOK_ACQUISITION.md).
+Update the backend on Kvasir and both `client.py` and `llm_api.py` on Frigg.

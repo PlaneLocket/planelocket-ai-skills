@@ -353,3 +353,52 @@ async def test_invalid_tv_transport_never_sends(transport, scope):
             "get it", intent="acquire", media_type="tv", title="Example Series", **scope
         )
     assert not transport.calls
+
+
+async def test_book_routes_preserve_choice_and_authentication(transport, evidence):
+    identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
+    evidence["continuation_id"] = identifier
+    transport.respond(evidence)
+    result = await transport.client.async_search_books("Example Author")
+    assert result["completed"]
+    assert transport.calls[-1][1] == BASE + "/books/search"
+    assert transport.calls[-1][2]["json"] == {"query": "Example Author"}
+    result = await transport.client.async_acquire_book(
+        "option 1",
+        "Example Book",
+        author="Example Author",
+        book_format="EPUB",
+        continuation_id=identifier,
+        choice=1,
+    )
+    method, url, options = transport.calls[-1]
+    assert (method, url) == ("POST", BASE + "/books/acquire")
+    assert options["headers"]["Authorization"] == "Bearer " + TOKEN
+    assert options["json"] == {
+        "question": "option 1",
+        "title": "Example Book",
+        "author": "Example Author",
+        "format": "EPUB",
+        "continuation_id": identifier,
+        "choice": 1,
+    }
+    assert result["continuation_id"] == identifier
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"choice": True},
+        {"choice": 1},
+        {"format": "NZB"},
+        {"author": " "},
+        {"continuation_id": "invented"},
+        {"title": None},
+    ],
+)
+async def test_invalid_book_fields_never_send(transport, fields):
+    if "format" in fields:
+        fields["book_format"] = fields.pop("format")
+    with pytest.raises(PlaneLocketError, match="invalid_question"):
+        await transport.client.async_acquire_book("get it", **{"title": "Example Book", **fields})
+    assert not transport.calls

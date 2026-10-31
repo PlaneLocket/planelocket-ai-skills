@@ -111,6 +111,30 @@ def validate_tv_scope(seasons=None, all_seasons=False):
     return fields
 
 
+def validate_book_fields(
+    question, title, *, author=None, book_format=None, continuation_id=None, choice=None
+):
+    question = validate_question(question)
+    fields = validate_acquisition(title, continuation_id=continuation_id)
+    if title is None or (
+        author is not None and (not isinstance(author, str) or not 1 <= len(author.strip()) <= 300)
+    ):
+        raise PlaneLocketError("invalid_question")
+    if book_format is not None and (
+        not isinstance(book_format, str) or book_format not in {"EPUB", "PDF", "MOBI"}
+    ):
+        raise PlaneLocketError("invalid_question")
+    if choice is not None and (
+        type(choice) is not int or not 1 <= choice <= 20 or continuation_id is None
+    ):
+        raise PlaneLocketError("invalid_question")
+    body = {"question": question, **fields}
+    for key, value in (("author", author), ("format", book_format), ("choice", choice)):
+        if value is not None:
+            body[key] = value
+    return body
+
+
 def _json_size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
@@ -229,6 +253,31 @@ class PlaneLocketClient:
             raise PlaneLocketError("invalid_question")
         payload = await self._async_request(
             "POST", "/investigate", deadline=REQUEST_TIMEOUT, body=body
+        )
+        return bounded_result(payload, self._token)
+
+    async def async_search_books(self, query: str) -> dict[str, Any]:
+        query = validate_question(query)
+        if len(query) > 500:
+            raise PlaneLocketError("invalid_question")
+        payload = await self._async_request(
+            "POST", "/books/search", deadline=REQUEST_TIMEOUT, body={"query": query}
+        )
+        return bounded_result(payload, self._token)
+
+    async def async_acquire_book(
+        self, question, title, *, author=None, book_format=None, continuation_id=None, choice=None
+    ) -> dict[str, Any]:
+        body = validate_book_fields(
+            question,
+            title,
+            author=author,
+            book_format=book_format,
+            continuation_id=continuation_id,
+            choice=choice,
+        )
+        payload = await self._async_request(
+            "POST", "/books/acquire", deadline=REQUEST_TIMEOUT, body=body
         )
         return bounded_result(payload, self._token)
 
