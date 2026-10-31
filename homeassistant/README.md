@@ -218,3 +218,15 @@ season 0. Keep automatic acquisition disabled during rollout.
 See [TV scope, API contract, deployment and rollback](../docs/TV_ACQUISITION.md).
 The update requires both `client.py` and `llm_api.py` on Frigg, plus the backend
 update on Kvasir; no dependency changes are needed.
+
+## Book library and acquisition
+
+`search_books` reads books visible to the dedicated Calibre-Web NextGen account.
+`acquire_book` checks CWNG and LazyLibrarian, asks for a numbered bibliographic
+selection, and requests the ebook through LazyLibrarian. CWNG acquisition is not
+used. `LAZYLIBRARIAN_AUTO_REQUEST` defaults to false, independently of movie/TV
+policy. LazyLibrarian's API cannot enforce per-request ebook formats; explicit
+format requirements receive a limitation instead of being silently dropped.
+
+See [book API, configuration, selection and rollout](../docs/BOOK_ACQUISITION.md).
+Update the backend on Kvasir and both `client.py` and `llm_api.py` on Frigg.

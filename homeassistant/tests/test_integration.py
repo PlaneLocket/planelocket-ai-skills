@@ -35,7 +35,7 @@ async def test_setup_registers_without_network_and_unload_preserves_assist(hass,
     apis = {api.id for api in llm.async_get_apis(hass)}
     assert api_id in apis
     instance = await llm.async_get_api(hass, api_id, context)
-    assert len(instance.tools) == 3
+    assert len(instance.tools) == 5
     assert instance.tools[0].integration == DOMAIN
     assert instance.tools[0].annotations.read_only is True
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -336,3 +336,84 @@ async def test_tv_invalid_arguments_never_reach_backend(hass, entry, context, fi
     assert result.error
     assert "canonical TV title" in result.data["error"]
     ask.assert_not_called()
+
+
+async def test_books_schema_read_only_search_and_selected_offer(hass, entry, context, evidence):
+    from homeassistant.components.ollama.entity import _format_tool
+
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    search = next(tool for tool in api.tools if tool.name.endswith("search_books"))
+    acquire = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
+    spec = _format_tool(acquire, api.custom_serializer)["function"]["parameters"]
+    assert set(spec["required"]) == {"question", "title"}
+    assert spec["properties"]["choice"]["type"] == "integer"
+    assert search.annotations.read_only is True
+    assert acquire.annotations.read_only is False
+    assert acquire.annotations.idempotent is False
+    identifier = "b028ae3e-946e-4c3c-aa72-65f1056b7b15"
+    evidence["continuation_id"] = identifier
+    with (
+        patch.object(entry.runtime_data, "async_search_books", new_callable=AsyncMock) as lookup,
+        patch.object(entry.runtime_data, "async_acquire_book", new_callable=AsyncMock) as submit,
+    ):
+        lookup.return_value = bounded_result(evidence, "test-only-credential")
+        submit.return_value = bounded_result(evidence, "test-only-credential")
+        await api.async_call_tool(
+            llm.ToolInput(tool_name=search.name, tool_args={"query": "Example Author"})
+        )
+        lookup.assert_awaited_once_with("Example Author")
+        submit.assert_not_called()
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=acquire.name,
+                tool_args={"question": "get Example Book", "title": "Example Book"},
+            )
+        )
+        assert result.data["continuation_id"] == identifier
+        await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=acquire.name,
+                tool_args={
+                    "question": "option 1",
+                    "title": "Example Book",
+                    "choice": 1,
+                    "continuation_id": identifier,
+                },
+            )
+        )
+        submit.assert_awaited_with(
+            "option 1",
+            "Example Book",
+            author=None,
+            book_format=None,
+            choice=1,
+            continuation_id=identifier,
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"choice": True},
+        {"choice": 1},
+        {"format": "NZB"},
+        {"author": " "},
+        {"continuation_id": "invented"},
+        {"offer_id": "invented"},
+        {"url": "https://untrusted.test"},
+    ],
+)
+async def test_invalid_book_tool_arguments_never_reach_backend(hass, entry, context, fields):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
+    with patch.object(entry.runtime_data, "async_acquire_book") as submit:
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={"question": "get Example Book", "title": "Example Book", **fields},
+            )
+        )
+    assert result.error
+    submit.assert_not_called()
