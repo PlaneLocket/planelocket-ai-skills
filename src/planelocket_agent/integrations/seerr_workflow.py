@@ -86,6 +86,11 @@ def confirm_movie_request(
 ) -> dict:
     """Submit a previously prepared and confirmed movie request."""
 
+    from planelocket_agent.integrations.seerr_policy import auto_request_enabled
+
+    if not auto_request_enabled():
+        return {"submitted": False, "reason": "dry_run"}
+
     if not storage.claim_pending(request_id):
         return {
             "submitted": False,
