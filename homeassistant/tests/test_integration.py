@@ -417,3 +417,42 @@ async def test_invalid_book_tool_arguments_never_reach_backend(hass, entry, cont
         )
     assert result.error
     submit.assert_not_called()
+
+
+async def test_natural_book_request_can_complete_in_one_registered_tool_call(hass, entry, context):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
+    accepted = {
+        "answer": "LazyLibrarian accepted the ebook request; status Wanted.",
+        "completed": True,
+        "tool_calls": 0,
+        "observations": [{"submission": {"submitted": True, "status": "Wanted"}}],
+    }
+    with (
+        patch.object(entry.runtime_data, "async_acquire_book", new_callable=AsyncMock) as acquire,
+        patch.object(entry.runtime_data, "async_search_books", new_callable=AsyncMock) as search,
+    ):
+        acquire.return_value = accepted
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={
+                    "question": "Get Example Book by Example Author",
+                    "title": "Example Book",
+                    "author": "Example Author",
+                },
+            )
+        )
+    assert not result.error
+    assert result.data["observations"][0]["submission"]["submitted"] is True
+    assert result.data.get("continuation_id") is None
+    acquire.assert_awaited_once_with(
+        "Get Example Book by Example Author",
+        "Example Book",
+        author="Example Author",
+        book_format=None,
+        continuation_id=None,
+        choice=None,
+    )
+    search.assert_not_called()

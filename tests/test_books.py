@@ -55,7 +55,10 @@ class LazyLibrarian:
     def __init__(self):
         self.rows = []
         self.skipped = 0
-        self.results = [{**entry(), "source": "OpenLibrary"}]
+        self.results = [
+            {**entry(), "source": "OpenLibrary"},
+            {**entry("OL456W"), "source": "OpenLibrary"},
+        ]
         self.configs = {
             "BOOK_API": "OpenLibrary",
             "NEWAUDIO_STATUS": "Skipped",
@@ -105,6 +108,7 @@ class LazyLibrarian:
             raise BookError("ll_service_unavailable")
         return {
             "title": "Example Book",
+            "authors": ["Example Author"],
             "status": "Skipped" if self.bad_status else "Wanted",
         }
 
@@ -134,7 +138,11 @@ def ask(setup, **fields):
 
 
 def select(setup, identifier=None, **fields):
-    identifier = identifier or ask(setup)["continuation_id"]
+    if identifier is None:
+        first = ask(setup)
+        identifier = first["continuation_id"]
+        if identifier is None:
+            return first
     return ask(setup, continuation_id=identifier, choice=1, **fields)
 
 
@@ -165,7 +173,7 @@ def test_cwng_lookup_is_independent_of_ll_and_owned_stops_writes(setup):
         assert books.lookup_books("Example")["completed"]
 
 
-def test_explicit_bibliographic_choice_even_for_one_match(setup):
+def test_ambiguous_bibliographic_matches_require_a_choice(setup):
     result = ask(setup)
     assert result["continuation_id"]
     assert outcome(result)["reason"] == "book_selection_required"
@@ -460,7 +468,7 @@ def test_library_arrival_at_selection_prevents_ll_request(setup):
 
 def test_cannot_request_missing_local_record_or_id_collision(setup):
     enable(setup)
-    setup[1].rows = [entry()]
+    setup[1].rows = [entry(), entry("OL456W")]
     token = ask(setup)["continuation_id"]
     setup[1].rows = []
     assert outcome(select(setup, token))["reason"] == "ll_identity_changed"
@@ -497,7 +505,7 @@ def test_skipped_metadata_is_reported_without_blocking_valid_choice_or_selection
     evidence = outcome(first)
     assert evidence["reason"] == "book_selection_required"
     assert evidence["metadata_records_skipped"] == 1
-    assert evidence["metadata_records_received"] == 2
+    assert evidence["metadata_records_received"] == 3
     assert evidence["search_complete"] is False
     assert "Unusable metadata records skipped: 1" in first["answer"]
     assert (
@@ -525,4 +533,80 @@ def test_selected_metadata_disappearing_into_skipped_results_blocks_writes(setup
     setup[1].skipped = 1
     result = select(setup, first["continuation_id"])
     assert outcome(result)["reason"] == "ll_identity_changed"
+    assert not setup[1].writes
+
+
+def test_explicit_request_with_single_verified_match_submits_without_confirmation(
+    setup,
+):
+    enable(setup)
+    setup[1].results = setup[1].results[:1]
+    result = ask(setup, author="Example Author")
+    assert outcome(result)["submission"]["submitted"] is True
+    assert result["continuation_id"] is None
+    assert "Choose" not in result["answer"]
+    assert setup[1].writes == [
+        ("add", "OL123W", "OpenLibrary"),
+        ("queue", "OL123W", "eBook"),
+    ]
+
+
+def test_single_match_dry_run_has_no_confirmation_and_no_writes(setup):
+    setup[1].results = setup[1].results[:1]
+    setup[1].skipped = 6
+    result = ask(setup)
+    assert outcome(result)["submission"]["reason"] == "dry_run"
+    assert outcome(result)["metadata_records_skipped"] == 6
+    assert result["continuation_id"] is None
+    assert not setup[1].writes
+
+
+def test_single_match_must_still_survive_fresh_metadata_check(setup):
+    enable(setup)
+    setup[1].results = setup[1].results[:1]
+    with patch.object(
+        setup[1],
+        "find",
+        side_effect=[
+            {"items": setup[1].results, "records_received": 1, "records_skipped": 0},
+            {"items": [], "records_received": 1, "records_skipped": 1},
+        ],
+    ):
+        result = ask(setup)
+    assert outcome(result)["reason"] == "ll_identity_changed"
+    assert not setup[1].writes
+
+
+def test_existing_uncertain_claim_cannot_be_bypassed_by_single_match(setup):
+    enable(setup)
+    remote = setup[1]
+    remote.results = remote.results[:1]
+    remote.error = BookError("ll_timeout", uncertain=True)
+    assert outcome(ask(setup))["submission"]["submitted"] is None
+    remote.error = None
+    assert outcome(ask(setup))["submission"]["submitted"] is None
+    assert remote.writes == [("add", "OL123W", "OpenLibrary")]
+
+
+def test_verified_final_author_must_match_selected_book(setup):
+    enable(setup)
+    setup[1].results = setup[1].results[:1]
+    with patch.object(
+        setup[1],
+        "status",
+        return_value={
+            "title": "Example Book",
+            "authors": ["Another Author"],
+            "status": "Wanted",
+        },
+    ):
+        assert outcome(ask(setup))["submission"]["submitted"] is None
+
+
+def test_multiple_matches_remain_a_clarification_when_acquisition_enabled(setup):
+    enable(setup)
+    result = ask(setup, author="Example Author")
+    assert result["continuation_id"]
+    assert outcome(result)["reason"] == "book_selection_required"
+    assert len(outcome(result)["candidates"]) == 2
     assert not setup[1].writes

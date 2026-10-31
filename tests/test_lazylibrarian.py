@@ -60,8 +60,6 @@ def remote():
                     row("OL123W" if state["duplicate"] else f"OL{i}W")
                     for i in range(state["count"])
                 ]
-            elif command == "getBook":
-                result = {"book": [row(params["id"][0])]}
             elif command == "findBook":
                 result = [
                     dict(
@@ -128,7 +126,12 @@ def test_post_body_auth_plain_tokens_json_and_one_book_commands(remote):
     assert client.config("NEWAUDIO_STATUS") == "Skipped"
     assert client.add("OL123W", "OpenLibrary") is True
     assert client.queue("OL123W") == "OK"
-    assert client.status("OL123W") == {"title": "Example Book", "status": "Skipped"}
+    assert client.status("OL0W") == {
+        "title": "Example Book",
+        "authors": ["Example Author"],
+        "status": "Skipped",
+    }
+    assert state["calls"][-1][0] == "getAllBooks"
     assert len(state["calls"]) == 5
     assert all(KEY not in str(call) for call in state["calls"])
 
@@ -181,8 +184,15 @@ def test_add_failures_or_unexpected_tokens_are_not_success(remote, response):
 
 def test_read_only_key_error_envelope_is_sanitized(remote):
     state, client = remote
-    state["response"] = {"Success": False, "Error": {"Code": 405, "Message": KEY}}
-    with pytest.raises(BookError, match="ll_invalid_auth") as failure:
+    state["response"] = {
+        "Success": False,
+        "Error": {
+            "Code": 405,
+            "Message": "Command: readCFG not available with read-only api access key "
+            + KEY,
+        },
+    }
+    with pytest.raises(BookError, match="ll_forbidden") as failure:
         client.config("BOOK_API")
     assert not failure.value.uncertain
     assert KEY not in str(failure.value)
@@ -328,3 +338,44 @@ def test_read_and_write_timeouts_are_distinguished_without_retries(remote, wrapp
         assert failure.value.uncertain is uncertain
         assert "secret" not in str(failure.value)
         send.assert_called_once()
+
+
+def test_unregistered_getbook_command_is_never_sent(remote):
+    state, client = remote
+    with client.session(), pytest.raises(BookError, match="invalid_arguments"):
+        client._call("getBook", id="OL123W")
+    assert not state["calls"]
+
+
+@pytest.mark.parametrize(
+    "message,code,expected",
+    [
+        ("Unknown command: getBook, try cmd=help", 405, "ll_unsupported_command"),
+        (
+            "Command: queueBook not available with read-only api access key, try cmd=help",
+            405,
+            "ll_forbidden",
+        ),
+        ("Incorrect API key", 401, "ll_invalid_auth"),
+        ("Unrecognized rejection", 405, "ll_request_rejected"),
+    ],
+)
+def test_protocol_errors_distinguish_commands_permissions_and_auth(
+    remote, message, code, expected
+):
+    state, client = remote
+    state["response"] = {"Success": False, "Error": {"Code": code, "Message": message}}
+    with pytest.raises(BookError, match=expected) as failure:
+        client.queue("OL123W")
+    assert not failure.value.uncertain
+    assert len(state["calls"]) == 1
+
+
+def test_status_verifies_exact_id_and_refuses_incomplete_inventory(remote):
+    state, client = remote
+    with pytest.raises(BookError, match="ll_identity_changed"):
+        client.status("absent-id")
+    state["count"] = ll.MAX_BOOKS + 1
+    with pytest.raises(BookError, match="ll_incomplete_inventory"):
+        client.status("OL0W")
+    assert all(command == "getAllBooks" for command, _ in state["calls"])
