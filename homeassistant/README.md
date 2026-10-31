@@ -197,3 +197,11 @@ the removal sequence if needed. No backend, proxy or Emby changes are part of ro
 - [Ollama multi-API configuration at 2026.10.1](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/ollama/config_flow.py)
 - [Home Assistant API registration, merger and tool contracts at 2026.10.1](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/helpers/llm.py)
 - [Existing backend HTTPS deployment](../docs/PRODUCTION_DEPLOYMENT.md)
+
+
+## Movie acquisition
+
+The separate `acquire_movie` tool supports structured title/year and server-issued
+continuations. `ask_household` stays read-only. See
+[the acquisition contract and rollout guide](../docs/SEERR_ACQUISITION.md).
+Keep `SEERR_AUTO_REQUEST=false` throughout dry-run validation.
