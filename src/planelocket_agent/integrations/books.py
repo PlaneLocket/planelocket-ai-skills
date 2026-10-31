@@ -7,6 +7,7 @@ import sqlite3
 import unicodedata
 from contextlib import closing
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from planelocket_agent.integrations.calibre_web import BookError, text
 from planelocket_agent.integrations.calibre_web import get_client as get_library
@@ -17,8 +18,7 @@ from planelocket_agent.integrations.lazylibrarian import (
 
 MAX_CHOICES = 20
 FORMATS = {"EPUB", "PDF", "MOBI"}
-READY_STATUSES = {"Skipped"}
-HELD_STATUSES = {"Wanted", "Snatched", "Have", "Open"}
+READY_STATUSES = {"Skipped", "Wanted"}
 
 
 def _normal(value):
@@ -77,6 +77,8 @@ def _failure(code, *, uncertain=False):
         "incomplete_library_search": "the CWNG library check was incomplete; narrow the title",
         "ll_unsupported_command": "LazyLibrarian does not support the requested API command",
         "ll_forbidden": "the LazyLibrarian API key lacks permission for this operation",
+        "ll_search_state_changed": "the ebook state changed before its acquisition search",
+        "ll_search_not_configured": "LazyLibrarian has no enabled search methods",
         "ll_timeout": "LazyLibrarian timed out while processing the request",
         "ll_incomplete_inventory": "the LazyLibrarian inventory check was incomplete",
         "ll_identity_changed": "the selected LazyLibrarian book identity changed or could not be verified",
@@ -89,7 +91,7 @@ def _failure(code, *, uncertain=False):
         "Book request outcome is uncertain. Check LazyLibrarian before retrying."
         if uncertain
         else descriptions.get(code, "Book information could not be verified")
-        + ". No ebook request was submitted."
+        + ". No acquisition search was submitted."
     )
     return _envelope(
         answer,
@@ -170,7 +172,7 @@ def _state_result(item):
             "already_in_library",
             "LazyLibrarian reports this ebook as already owned",
         )
-    elif status in {"Wanted", "Snatched"}:
+    elif status == "Snatched":
         reason, detail = (
             "already_requested",
             f"LazyLibrarian already lists this ebook as {status}",
@@ -181,7 +183,7 @@ def _state_result(item):
             f"LazyLibrarian status {status} requires review in its UI",
         )
     return _envelope(
-        detail + ". No new ebook request was submitted.",
+        detail + ". No additional acquisition search was submitted.",
         {
             "media_type": "book",
             "reason": reason,
@@ -194,7 +196,7 @@ def _state_result(item):
 
 def _owned_result(matches):
     return _envelope(
-        "Matching book files are already in the library visible to the CWNG account. No ebook request was submitted.",
+        "Matching book files are already in the library visible to the CWNG account. No acquisition search was submitted.",
         {
             "media_type": "book",
             "reason": "already_in_library",
@@ -261,7 +263,7 @@ def acquire_book(
     choice=None,
     storage,
 ):
-    """Resolve a book explicitly, then verify its ebook Wanted state after mutation."""
+    """Resolve a book, prepare its ebook state and request its acquisition search."""
     try:
         title, author, book_format = validate_request(
             title, author, book_format, continuation_id, choice
@@ -291,7 +293,7 @@ def acquire_book(
                 candidates = record["candidates"]
                 if type(choice) is not int or not 1 <= choice <= len(candidates):
                     return _envelope(
-                        "Choose one of the returned book numbers. No ebook request was submitted.",
+                        "Choose one of the returned book numbers. No acquisition search was submitted.",
                         {
                             "reason": "book_selection_required",
                             "candidates": [
@@ -347,7 +349,7 @@ def acquire_book(
                             if search and search["records_skipped"]
                             else ""
                         )
-                        + "This does not establish that the book is unavailable. Try a title and author. No ebook request was submitted.",
+                        + "This does not establish that the book is unavailable. Try a title and author. No acquisition search was submitted.",
                         {
                             "reason": "no_matching_books",
                             **search_evidence,
@@ -402,7 +404,7 @@ def acquire_book(
                         if search and search["records_skipped"]
                         else ""
                     )
-                    + ". No ebook request was submitted.",
+                    + ". No acquisition search was submitted.",
                     {
                         "reason": "book_selection_required",
                         "candidates": [
@@ -454,87 +456,168 @@ def acquire_book(
                         "submission": {"submitted": False, "reason": "dry_run"},
                     },
                 )
-            key = hashlib.sha256(
+            # Preparation and search have separate durable claims. Old releases
+            # only added/queued books; those records cannot prove search acceptance.
+            # An already verified Wanted book needs no replay of preparation writes.
+            confirmed = current
+            if current is None or current["status"] != "Wanted":
+                key = hashlib.sha256(
+                    json.dumps(
+                        ["lazylibrarian", client.target, selected["book_id"]]
+                    ).encode()
+                ).hexdigest()
+                prior = _reserve(storage, key, continuation_id)
+                if prior is not None:
+                    if prior["status"] == "submitted":
+                        return _envelope(
+                            "This ebook was previously prepared, but its state has changed. Review it in LazyLibrarian; no acquisition search was submitted.",
+                            {
+                                **evidence,
+                                "reason": "preparation_state_changed",
+                                "submission": {"submitted": False},
+                            },
+                        )
+                    return _failure("submission_uncertain", uncertain=True)
+                if not auto_request_enabled():
+                    _record(storage, key, "rejected")
+                    return _envelope(
+                        "Book acquisition is disabled. No acquisition search was submitted.",
+                        {
+                            **evidence,
+                            "reason": "auto_request_disabled",
+                            "submission": {"submitted": False, "reason": "dry_run"},
+                        },
+                    )
+                added = False
+                queue_acknowledged = False
+                try:
+                    if current is None:
+                        client.add(selected["book_id"], selected["source"])
+                        added = True
+                        current = next(
+                            (
+                                i
+                                for i in client.inventory()
+                                if i["book_id"] == selected["book_id"]
+                            ),
+                            None,
+                        )
+                        if current is None or not _matches(
+                            current, selected["title"], selected["authors"][0]
+                        ):
+                            raise BookError("ll_identity_changed", uncertain=True)
+                        if current["status"] not in READY_STATUSES:
+                            raise BookError("ll_status_blocked", uncertain=True)
+                    if current["status"] != "Wanted":
+                        if not auto_request_enabled():
+                            raise BookError("ll_policy_changed", uncertain=added)
+                        client.queue(selected["book_id"])
+                        queue_acknowledged = True
+                    confirmed = client.status(selected["book_id"])
+                    if not _matches(
+                        confirmed, selected["title"], selected["authors"][0]
+                    ) or confirmed["status"] not in {
+                        "Wanted",
+                        "Snatched",
+                        "Have",
+                        "Open",
+                    }:
+                        raise BookError("ll_queue_unverified", uncertain=True)
+                except BookError as exc:
+                    uncertain = added or queue_acknowledged or exc.uncertain
+                    _record(storage, key, "uncertain" if uncertain else "rejected")
+                    return _failure(exc.code, uncertain=uncertain)
+                _record(
+                    storage, key, "submitted", selected["book_id"], confirmed["status"]
+                )
+            else:
+                # Wanted is eligibility for search, not evidence it ever happened.
+                confirmed = client.status(selected["book_id"])
+                if not _matches(confirmed, selected["title"], selected["authors"][0]):
+                    raise BookError("ll_identity_changed")
+            if confirmed["status"] != "Wanted":
+                held = _state_result({**confirmed, "book_id": selected["book_id"]})
+                if held is not None:
+                    return held
+                raise BookError("ll_search_state_changed")
+            evidence.update(
+                book_id=selected["book_id"], book_status_before_search="Wanted"
+            )
+            search_key = hashlib.sha256(
                 json.dumps(
-                    ["lazylibrarian", client.target, selected["book_id"]]
+                    ["lazylibrarian-ebook-search", client.target, selected["book_id"]]
                 ).encode()
             ).hexdigest()
-            prior = _reserve(storage, key, continuation_id)
+            # A distinct request ID avoids colliding with the preparation claim.
+            prior = _reserve(storage, search_key, str(uuid4()))
             if prior is not None:
                 if prior["status"] == "submitted":
                     return _envelope(
-                        "This book already has a recorded LazyLibrarian request. No new ebook request was submitted.",
+                        "LazyLibrarian previously acknowledged a search for this ebook. No additional search was submitted; download status is not verified.",
                         {
                             **evidence,
-                            "reason": "already_requested",
+                            "reason": "already_search_requested",
                             "submission": {
                                 "submitted": False,
-                                "book_id": prior["job_id"],
-                                "recorded_state": prior["remote_state"],
+                                "operation": "searchBook",
+                                "previously_acknowledged": True,
                             },
                         },
                     )
-                return _failure("submission_uncertain", uncertain=True)
+                result = _failure("search_submission_uncertain", uncertain=True)
+                result["observations"][0].update(evidence, operation="searchBook")
+                return result
             if not auto_request_enabled():
-                _record(storage, key, "rejected")
+                _record(storage, search_key, "rejected")
                 return _envelope(
-                    "Book acquisition is disabled. No ebook request was submitted.",
+                    "The ebook is Wanted, but book acquisition is disabled. No acquisition search was submitted.",
                     {
                         **evidence,
                         "reason": "auto_request_disabled",
                         "submission": {"submitted": False, "reason": "dry_run"},
                     },
                 )
-            added = False
-            queue_acknowledged = False
             try:
-                if current is None:
-                    client.add(selected["book_id"], selected["source"])
-                    added = True
-                    current = next(
-                        (
-                            i
-                            for i in client.inventory()
-                            if i["book_id"] == selected["book_id"]
-                        ),
-                        None,
-                    )
-                    if current is None or not _matches(
-                        current, selected["title"], selected["authors"][0]
-                    ):
-                        raise BookError("ll_identity_changed", uncertain=True)
-                    if current["status"] not in READY_STATUSES | {"Wanted"}:
-                        raise BookError("ll_status_blocked", uncertain=True)
-                if current["status"] != "Wanted":
-                    if not auto_request_enabled():
-                        raise BookError("ll_policy_changed", uncertain=added)
-                    client.queue(selected["book_id"])
-                    queue_acknowledged = True
-                # A bare OK is not proof: verify this exact book's Wanted state.
-                confirmed = client.status(selected["book_id"])
-                if (
-                    _normal(confirmed["title"]) != _normal(selected["title"])
-                    or not _authors_match(selected["authors"][0], confirmed["authors"])
-                    or confirmed["status"] not in {"Wanted", "Snatched", "Have", "Open"}
-                ):
-                    raise BookError("ll_queue_unverified", uncertain=True)
+                client.search(selected["book_id"])
             except BookError as exc:
-                uncertain = added or queue_acknowledged or exc.uncertain
-                _record(storage, key, "uncertain" if uncertain else "rejected")
-                return _failure(exc.code, uncertain=uncertain)
-            _record(storage, key, "submitted", selected["book_id"], confirmed["status"])
-            evidence.update(
-                reason=None,
-                submission={
-                    "submitted": True,
-                    "book_id": selected["book_id"],
-                    "status": confirmed["status"],
-                },
+                _record(
+                    storage, search_key, "uncertain" if exc.uncertain else "rejected"
+                )
+                answer = (
+                    "The ebook is Wanted, but the acquisition search outcome is uncertain. Check LazyLibrarian before retrying."
+                    if exc.uncertain
+                    else "The ebook is Wanted, but LazyLibrarian did not accept its acquisition search. No search was submitted."
+                )
+                if exc.code == "ll_search_not_configured":
+                    answer += " No search methods are enabled in LazyLibrarian."
+                return _envelope(
+                    answer,
+                    {
+                        **evidence,
+                        "reason": exc.code,
+                        "submission": {
+                            "submitted": None if exc.uncertain else False,
+                            "operation": "searchBook",
+                        },
+                    },
+                    completed=False,
+                )
+            _record(
+                storage, search_key, "submitted", selected["book_id"], "search_accepted"
             )
             return _envelope(
-                f"LazyLibrarian accepted the ebook request for {selected['title']}; its verified status is {confirmed['status']}. Its configured scheduler handles acquisition. This does not confirm a download.",
-                evidence,
+                f"LazyLibrarian accepted an acquisition search for the ebook {selected['title']}. This does not confirm that a download was found or started.",
+                {
+                    **evidence,
+                    "reason": "search_requested",
+                    "submission": {
+                        "submitted": True,
+                        "book_id": selected["book_id"],
+                        "operation": "searchBook",
+                    },
+                },
             )
+
     except BookError as exc:
         return _failure(exc.code, uncertain=exc.uncertain)
     except sqlite3.Error:

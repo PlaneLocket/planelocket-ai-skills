@@ -225,7 +225,9 @@ update on Kvasir; no dependency changes are needed.
 `acquire_book` checks CWNG and LazyLibrarian and requests the ebook through
 LazyLibrarian. An explicit "Get <book> by <author>" should call it directly without
 another confirmation; only ambiguous matches require a numbered clarification.
-CWNG acquisition is not used. `LAZYLIBRARIAN_AUTO_REQUEST` defaults to false, independently of movie/TV
+After preparing Wanted state, the backend calls `searchBook` for that exact ebook;
+Wanted alone is not acquisition. CWNG acquisition is not used.
+`LAZYLIBRARIAN_AUTO_REQUEST` defaults to false, independently of movie/TV
 policy. LazyLibrarian's API cannot enforce per-request ebook formats; explicit
 format requirements receive a limitation instead of being silently dropped.
 

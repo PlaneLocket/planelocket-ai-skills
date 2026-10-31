@@ -2,7 +2,8 @@
 
 HAL's `search_books` reads the Calibre-Web NextGen library. `acquire_book` checks
 that library and LazyLibrarian, resolves a bibliographic book, and requests its
-**ebook** through LazyLibrarian. A single verified match proceeds without another
+**ebook acquisition search** through LazyLibrarian. Wanted is preparation, not
+evidence that a search or download has begun. A single verified match proceeds without another
 confirmation; only multiple matches require a numbered clarification. CWNG
 acquisition APIs are not used. Downstream searches/downloads/imports remain with the existing stack.
 
@@ -59,8 +60,9 @@ lookup, not external bibliography research.
 Acquisition requires separate `question` (up to 2000 characters) and `title` (up
 to 500), with optional `author` (up to 300). The backend checks exact normalized
 title and optional author against CWNG files, then LazyLibrarian's inventory.
-Skipped inventory records can be requested; Wanted/Snatched records are already
-requested; Have/Open records are treated as owned. Ignored and unknown statuses
+Skipped records are queued as Wanted before search. Existing Wanted records are
+eligible for an immediate ebook search without re-adding/re-queueing them.
+Snatched records are already in progress; Have/Open records are treated as owned. Ignored and unknown statuses
 require review in LazyLibrarian rather than being silently overridden.
 
 If no local LazyLibrarian record matches, `findBook` uses its configured metadata
@@ -112,30 +114,50 @@ reason `dry_run`, and explicitly says no ebook request was submitted. No addBook
 queueBook or searchBook commands run. Library/metadata/configuration reads can run.
 
 When enabled, the adapter uses `addBook&id=...&source=...&wait=1` only if the record
-is absent, verifies the inserted identity, then uses `queueBook&id=...&type=eBook`
-if needed. It never queues AudioBook or changes existing audiobook status. Finally
-the supported `getAllBooks` inventory API verifies that exact book's title, author
-and Wanted state (or advancement to Snatched/Have/Open). The pinned build defines
-a Python `_getbook` method but does not register `getBook` as an API command; the
-adapter never calls that unsupported command. Unknown-command and read-only-key
-permission errors are reported separately from invalid credentials. A bare `OK` is insufficient. The result reports the book ID and verified
-state, not an invented job ID or a completed download. LazyLibrarian's configured
-scheduler handles Wanted books; this integration does not force a search, download
-or import. Adding a record follows LazyLibrarian's metadata/default settings.
+is absent, verifies the inserted identity, and uses `queueBook&id=...&type=eBook`
+only if necessary. It verifies the exact ID/title/author and Wanted state through
+the supported `getAllBooks` inventory API. Then it invokes
+`searchBook&id=...&type=eBook` **without `wait`** to initiate that ebook's background
+provider search. It never calls the bulk `forceBookSearch` command or requests
+AudioBook. Snatched/owned records are not searched again.
 
-There is no upstream transaction or idempotency key for these commands. An additive
-`book_request_journal` in `SEERR_REQUEST_DB` reserves each LazyLibrarian target/book
-before writes. It blocks duplicate submissions across conversations/workers. New
-choices cannot bypass a submitting/uncertain claim. Successful requests keep a
-snapshot of acknowledgement state; they are not polled later. The internal journal
-`job_id` column holds the LazyLibrarian book ID, not a downloader job ID.
+Wanted alone is a wishlist/eligibility state. `submission.submitted=true` for the
+new flow means the specific `searchBook` command was acknowledged with `OK`;
+`submission.operation` is `searchBook`. It does not establish that a provider found
+a release, a downloader accepted it, or a download started/completed. No download
+monitoring or completion polling is added. The pinned command returns a definite
+rejection when no search methods are enabled. An `OK` is asynchronous acceptance;
+background provider failures can still occur in LazyLibrarian.
 
-A lost acknowledgement, partial add/queue, or failed final verification returns
-`submitted=null`; inspect LazyLibrarian before retrying. Writes are never retried
-automatically and no rollback changes are issued. A definite rejection before any
-accepted mutation permits a fresh explicit selection. After recorded success, a
-later intentional re-request must be handled in LazyLibrarian. Keep this database
-persistent and shared across workers; deleting it removes local duplicate guards.
+The pinned build defines a Python `_getbook` method but does not register `getBook`
+as an API command; it is never used. Unknown-command, read-only-key permission and
+credential errors are distinguished. A previous verification error after queueing
+can leave a valid Wanted book; the new flow verifies its state and searches it
+without replaying preparation writes.
+
+There is no upstream transaction or idempotency key for these commands. The
+existing `book_request_journal` in `SEERR_REQUEST_DB` now uses distinct key
+namespaces for preparation and acquisition search, with a separate request ID for
+each claim. No database migration or claim deletion is required. Legacy records
+only describe add/queue operations and cannot establish search acceptance. A fresh
+verified Wanted state permits the first new search without clearing or replaying
+an older uncertain preparation claim. If that state cannot be verified, it blocks
+search. An uncertain **search** claim remains a strict no-replay guard, even while
+the book is Wanted.
+
+A search claim is persisted before its POST. Repeated calls and workers cannot
+launch a second acknowledged or uncertain search. A prior acknowledged search is
+reported as history, not an active download; later manual search retries can be
+performed in LazyLibrarian. A definite rejection (including no enabled methods)
+permits a new explicit request after correction. Network errors or ambiguous
+acknowledgements return `submitted=null`, preserve the search claim and never
+retry automatically. No rollback or downloader-control commands run.
+
+If preparation succeeds but search is rejected or disabled, the response states
+that the book is Wanted but no search was accepted. It does not claim complete
+acquisition or that no preparation occurred. Keep this database persistent and
+shared across workers. Deleting it removes local duplicate guards. The internal
+`job_id` column holds the book ID, not a downloader job ID.
 
 Checks and writes are separate remote calls: an administrator or scheduler can
 change records/defaults concurrently. This adapter cannot make LazyLibrarian's API
@@ -188,9 +210,12 @@ Start a fresh HAL conversation with Assist and PlaneLocket AI selected.
 Validate a known CWNG title with `search_books`; then validate an explicit book
 request with the LL switch false. A single match should reach dry-run without
 confirmation; multiple matches should ask for clarification. Enable book requests
-only for the intended live test. If an earlier request returned an uncertain result, inspect its existing
-LazyLibrarian status first; do not blindly resubmit or clear the journal. The acceptance criterion is the correct book's verified LazyLibrarian
-status. Downloads/imports remain outside this software deployment validation.
+only for the intended live test. Earlier uncertain preparation can be reconciled
+by the existing verified Wanted state without re-adding or re-queueing the book;
+do not clear journal claims. A prior uncertain search must not be replayed.
+The acceptance criterion is acknowledgement of `searchBook` for the correct ebook,
+or a verified already-Snatched/owned result; Wanted alone does not pass.
+Downloads/imports remain outside this software deployment validation.
 
 Rollback: disable only `LAZYLIBRARIAN_AUTO_REQUEST`, restore the previous backend
 and HA files, and restart. The additive table can remain. Do not restore an old
