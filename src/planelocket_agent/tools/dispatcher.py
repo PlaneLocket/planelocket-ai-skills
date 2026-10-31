@@ -273,7 +273,7 @@ class ToolDispatcher:
         )
 
     def bind_media_requests(self, storage: SeerrRequestStorage) -> None:
-        """Register movie-request preparation without submission access."""
+        """Register explicit movie acquisition workflow."""
 
         def prepare(title: str, year: int | None = None) -> dict:
             return prepare_movie_request(
@@ -286,7 +286,7 @@ class ToolDispatcher:
             name="prepare_movie_request",
             description=(
                 "Prepare a movie acquisition requested explicitly by the user. "
-                "Creates a pending confirmation; does not submit the request. "
+                 "Requests are submitted only when automatic acquisition is enabled. "
                 "Never use for general movie searches."
             ),
             handler=prepare,
