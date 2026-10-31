@@ -164,3 +164,82 @@ def test_single_page_and_empty_search():
     for count in (0, 1, 20):
         with patch.object(seerr, "_seerr_get", return_value=page(1, count=count)):
             assert seerr.search_media("Example")["complete"]
+
+
+def test_1296_entries_with_50_repeated_identities():
+    """Reproduce the live count shape without treating one object as two movies."""
+    entries = [
+        {
+            "id": i,
+            "mediaType": "movie",
+            "title": f"Film {i}",
+            "releaseDate": "2021-01-01",
+        }
+        for i in range(1, 1247)
+    ]
+    entries.extend(dict(item) for item in entries[:50])
+
+    def fetch(endpoint, params, *, timeout):
+        number = params["page"]
+        response = page(number)
+        response["results"] = entries[(number - 1) * 20 : number * 20]
+        return response
+
+    with patch.object(seerr, "_seerr_get", side_effect=fetch):
+        result = seerr.search_media("Example")
+    assert result["complete"]
+    assert result["total_results"] == 1296
+    assert result["unique_results"] == 1246
+    assert result["duplicates_omitted"] == 50
+    assert [item["id"] for item in result["results"]] == list(range(1, 1247))
+
+
+@pytest.mark.parametrize("field", ["title", "originalTitle", "releaseDate"])
+def test_conflicting_data_for_one_identity_stays_incomplete(field):
+    def fetch(endpoint, params, *, timeout):
+        response = page(params["page"], count=40)
+        if params["page"] == 2:
+            response["results"][0] = dict(page(1, count=40)["results"][0])
+            response["results"][0][field] = "conflicting data"
+        return response
+
+    with patch.object(seerr, "_seerr_get", side_effect=fetch):
+        result = seerr_resolver.find_media("Film 1", media_type="movie", year=2021)
+    assert not result["resolved"]
+    assert result["search"]["incomplete_reason"] == "conflicting_identity"
+
+
+def test_same_number_across_media_types_is_not_deduplicated():
+    response = page(1, count=2)
+    response["results"][1] = {
+        "id": 1,
+        "mediaType": "tv",
+        "name": "Film 1",
+        "firstAirDate": "2021-01-01",
+    }
+    with patch.object(seerr, "_seerr_get", return_value=response):
+        result = seerr.search_media("Film 1")
+    assert result["complete"]
+    assert result["unique_results"] == 2
+
+
+def test_repeated_exact_candidate_reaches_available_status(monkeypatch):
+    monkeypatch.setenv("SEERR_AUTO_REQUEST", "false")
+    response = page(1, count=2)
+    response["results"][1] = dict(response["results"][0])
+    with (
+        patch.object(seerr, "_seerr_get", return_value=response),
+        patch.object(
+            seerr_resolver,
+            "get_media_details",
+            return_value={
+                "availability": "available",
+                "availability_4k": "unknown",
+                "mediaInfo": {},
+            },
+        ),
+        patch("planelocket_agent.integrations.seerr_workflow.request_movie") as submit,
+    ):
+        result = prepare_movie_request("Film 1", year=2021)
+    assert result["reason"] == "already_available"
+    submit.assert_not_called()

@@ -100,7 +100,14 @@ before returning. This is a bounded collection budget, not a hard wall-clock
 transport deadline.
 
 All pages must agree on counts and page numbers; the collected count must match,
-and repeated media identities are rejected. A failed, changing, over-limit, or
+and media identities are deduplicated by `(mediaType, id)`. Raw entry count is
+checked against the reported count before deduplication. Consistent repeated
+identities are collapsed in first-seen order; conflicting title, original title,
+or release-date data for one identity keeps the search incomplete. Different
+identities that match the same title/year remain ambiguous. Search responses
+include `unique_results` and `duplicates_omitted` alongside the reported raw count.
+Incomplete resolution evidence retains the collector's reason and page/count
+metadata for diagnosis. A failed, changing, over-limit, or
 expired search returns no usable results with `complete=false`. The resolver
 therefore cannot authorize from an incomplete set, even if page one contains an
 exact title/year match. This preserves late-page ambiguity checks.

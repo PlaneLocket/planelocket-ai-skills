@@ -146,15 +146,34 @@ def search_media(query: str) -> dict:
         return incomplete("search_timeout")
     if len(results) != total_results:
         return incomplete("result_count_mismatch")
-    identities = [(item.get("mediaType"), item.get("id")) for item in results]
-    if any(
-        not isinstance(kind, str) or type(identifier) is not int or identifier <= 0
-        for kind, identifier in identities
-    ) or len(set(identities)) != len(identities):
-        return incomplete("invalid_or_repeated_results")
+    unique = {}
+    identity_fields = (
+        "title",
+        "name",
+        "originalTitle",
+        "originalName",
+        "releaseDate",
+        "firstAirDate",
+    )
+    for item in results:
+        kind, identifier = item.get("mediaType"), item.get("id")
+        if not isinstance(kind, str) or type(identifier) is not int or identifier <= 0:
+            return incomplete("invalid_identity")
+        key = (kind, identifier)
+        if key in unique:
+            # Repeated appearances of one upstream media object are not
+            # separate candidates. Conflicting identity data is still unsafe.
+            if any(
+                unique[key].get(field) != item.get(field) for field in identity_fields
+            ):
+                return incomplete("conflicting_identity")
+        else:
+            unique[key] = item
     return {
-        "results": results,
+        "results": list(unique.values()),
         "total_results": total_results,
+        "unique_results": len(unique),
+        "duplicates_omitted": len(results) - len(unique),
         "total_pages": total_pages,
         "complete": True,
     }
