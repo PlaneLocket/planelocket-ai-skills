@@ -30,7 +30,7 @@ class OllamaClient:
             "messages": messages,
             "stream": False,
             "options": {
-                "num_ctx": 8192,
+                "num_ctx": 16384,
             },
         }
 
@@ -63,6 +63,9 @@ class OllamaClient:
 
         except error.URLError as exc:
             raise ConnectionError(f"Cannot connect to Ollama: {exc.reason}") from exc
+
+        if result.get("done_reason") == "length":
+            raise ValueError("Ollama generation reached its token or context limit")
 
         try:
             return result["message"]["content"]
