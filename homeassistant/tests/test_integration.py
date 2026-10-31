@@ -231,3 +231,38 @@ async def test_invalid_acquisition_does_not_call_backend(hass, entry, context, f
         result = await api.async_call_tool(llm.ToolInput(tool_name=tool.name, tool_args=fields))
     assert result.error
     ask.assert_not_called()
+
+
+async def test_acquisition_schema_requires_title_and_reports_missing_title(hass, entry, context):
+    """Reproduce the live HAL question-only acquisition call before retrying."""
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_movie"))
+    from homeassistant.components.ollama.entity import _format_tool
+
+    spec = _format_tool(tool, api.custom_serializer)
+    assert {"question", "title"} == set(spec["function"]["parameters"]["required"])
+    with patch.object(entry.runtime_data, "async_ask", new_callable=AsyncMock) as ask:
+        failure = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name, tool_args={"question": "Please acquire the movie Example Film"}
+            )
+        )
+        assert failure.error
+        assert failure.data["code"] == "missing_title"
+        assert "title as separate fields" in failure.data["error"]
+        ask.assert_not_called()
+        ask.return_value = {"completed": True, "answer": "No request was submitted."}
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={
+                    "question": "Please acquire the movie Example Film",
+                    "title": "Example Film",
+                },
+            )
+        )
+        assert not result.error
+        ask.assert_awaited_once_with(
+            "Please acquire the movie Example Film", intent="acquire", title="Example Film"
+        )
