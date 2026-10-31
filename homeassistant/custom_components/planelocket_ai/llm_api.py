@@ -29,8 +29,9 @@ For an explicit user request to acquire a movie, use acquire_movie with the
 canonical title and a separate release year, if known. This tool can submit a
 request when server policy permits; never use it for availability-only questions.
 If a result contains continuation_id, ask the user to choose from its candidates.
-On the follow-up, call acquire_movie with that exact continuation_id, the user's
-reply as question, and the selected year when known. Never invent an ID or reuse
+Always include title as a separate argument; putting it only in question is insufficient.
+On the follow-up, call acquire_movie with the original title, that exact continuation_id,
+the user's reply as question, and the selected year when known. Never invent an ID or reuse
 one from another conversation. Do not substitute a new title search for a pending
 selection. Report the actual outcome; if not submitted, say so explicitly."""
 
@@ -114,14 +115,15 @@ class AcquireMovieTool(AskHouseholdTool):
     name = "acquire_movie"
     title = "Acquire a movie"
     description = (
-        "Acquire a movie only on the user's explicit request. Provide canonical title "
-        "and separate year, or the returned continuation_id with the user's selection. "
+        "Acquire a movie only on the user's explicit request. Required arguments: question "
+        "and title (canonical movie title, without year). Include year separately if known. "
+        "For a follow-up, repeat the original title and include the returned continuation_id. "
         "May submit to Seerr if server policy permits. Never claim success without submitted=true."
     )
     parameters = probatio.Schema(
         {
             probatio.Required("question"): str,
-            probatio.Optional("title"): str,
+            probatio.Required("title"): str,
             probatio.Optional("year"): int,
             probatio.Optional("continuation_id"): str,
         }
@@ -132,8 +134,20 @@ class AcquireMovieTool(AskHouseholdTool):
 
     async def async_call(self, hass, tool_input, llm_context):
         """Forward structured identity and server-issued state without retries."""
+        args = tool_input.tool_args
+        if "title" not in args and "continuation_id" not in args:
+            return llm.ToolResult(
+                data={
+                    "error": (
+                        "Missing required title argument. Retry acquire_movie with question and "
+                        "title as separate fields; put the canonical movie title in title and "
+                        "the release year in year if known."
+                    ),
+                    "code": "missing_title",
+                },
+                error=True,
+            )
         try:
-            args = tool_input.tool_args
             if "question" not in args or set(args) - {
                 "question",
                 "title",
@@ -149,7 +163,12 @@ class AcquireMovieTool(AskHouseholdTool):
         except PlaneLocketError as err:
             if err.code == "invalid_auth":
                 self._entry.async_start_reauth(hass)
-            return llm.ToolResult(
-                data={"error": ERROR_MESSAGES[err.code], "code": err.code}, error=True
-            )
+            message = ERROR_MESSAGES[err.code]
+            if err.code == "invalid_question":
+                message = (
+                    "Invalid acquisition arguments. Provide a nonempty question (max 2000 "
+                    "characters) and title (max 500 characters); year must be an integer "
+                    "from 1800 to 2199, and continuation_id must be the exact returned UUID."
+                )
+            return llm.ToolResult(data={"error": message, "code": err.code}, error=True)
         return llm.ToolResult(data=result, error=not result["completed"])
