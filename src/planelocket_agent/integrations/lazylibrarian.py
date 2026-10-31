@@ -92,14 +92,15 @@ class LazyLibrarianClient:
             "readCFG": {"name", "group"},
             "addBook": {"id", "source", "wait"},
             "queueBook": {"id", "type"},
+            "searchBook": {"id", "type"},
         }
         if command not in allowed or set(params) != allowed[command]:
             raise BookError("invalid_arguments")
         if command == "readCFG" and CONFIG_NAMES.get(params["name"]) != params["group"]:
             raise BookError("invalid_arguments")
-        if command in {"addBook", "queueBook"}:
+        if command in {"addBook", "queueBook", "searchBook"}:
             params["id"] = book_id(params["id"])
-        if command == "queueBook" and params["type"] != "eBook":
+        if command in {"queueBook", "searchBook"} and params["type"] != "eBook":
             raise BookError("invalid_arguments")
         if command == "addBook" and (
             params["source"] not in SOURCES or params["wait"] != "1"
@@ -107,7 +108,7 @@ class LazyLibrarianClient:
             raise BookError("invalid_arguments")
         if command == "getAllBooks" and params["limit"] != MAX_BOOKS + 1:
             raise BookError("invalid_arguments")
-        mutation = command in {"addBook", "queueBook"}
+        mutation = command in {"addBook", "queueBook", "searchBook"}
         remaining = self._deadline - time.monotonic()
         if remaining <= 0:
             raise BookError("ll_timeout")
@@ -165,7 +166,12 @@ class LazyLibrarianClient:
                     if params["name"] == "BOOK_API" and value not in SOURCES:
                         raise BookError("ll_invalid_response")
                     return value
-                if command == "queueBook" and result != "OK":
+                if (
+                    command == "searchBook"
+                    and result == "No search methods set, check config"
+                ):
+                    raise BookError("ll_search_not_configured")
+                if command in {"queueBook", "searchBook"} and result != "OK":
                     raise BookError("ll_invalid_response", uncertain=True)
                 if command == "addBook" and result is not True:
                     # Metadata import may have side effects before returning failure.
@@ -271,6 +277,11 @@ class LazyLibrarianClient:
     def queue(self, identifier):
         with self.session():
             return self._call("queueBook", id=identifier, type="eBook")
+
+    def search(self, identifier):
+        """Request one ebook's background search, without a bulk/wait command."""
+        with self.session():
+            return self._call("searchBook", id=identifier, type="eBook")
 
     def status(self, identifier):
         # getBook has a Python implementation upstream but is not registered in

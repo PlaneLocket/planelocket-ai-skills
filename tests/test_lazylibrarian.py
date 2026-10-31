@@ -84,7 +84,7 @@ def remote():
                     "wait": ["1"],
                 }
                 result = True
-            elif command == "queueBook":
+            elif command in {"queueBook", "searchBook"}:
                 assert params == {"id": ["OL123W"], "type": ["eBook"]}
                 result = "OK"
             else:
@@ -379,3 +379,45 @@ def test_status_verifies_exact_id_and_refuses_incomplete_inventory(remote):
     with pytest.raises(BookError, match="ll_incomplete_inventory"):
         client.status("OL0W")
     assert all(command == "getAllBooks" for command, _ in state["calls"])
+
+
+def test_search_requests_one_ebook_without_wait_or_bulk_search(remote):
+    state, client = remote
+    assert client.search("OL123W") == "OK"
+    assert state["calls"] == [("searchBook", {"id": ["OL123W"], "type": ["eBook"]})]
+
+
+def test_search_with_no_methods_is_a_definite_rejection(remote):
+    state, client = remote
+    state["response"] = "No search methods set, check config"
+    with pytest.raises(BookError, match="ll_search_not_configured") as failure:
+        client.search("OL123W")
+    assert not failure.value.uncertain
+    assert len(state["calls"]) == 1
+
+
+@pytest.mark.parametrize(
+    "status,uncertain", [(401, False), (403, False), (500, True), (302, True)]
+)
+def test_search_transport_never_replays_after_failure(remote, status, uncertain):
+    state, client = remote
+    state["http_status"] = status
+    with pytest.raises(BookError) as failure:
+        client.search("OL123W")
+    assert failure.value.uncertain is uncertain
+    assert len(state["calls"]) == 1
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"id": "OL123W", "type": "AudioBook"},
+        {"id": "one,two", "type": "eBook"},
+        {"id": "OL123W", "type": "eBook", "wait": "1"},
+    ],
+)
+def test_search_allowlist_refuses_audio_multiple_ids_and_wait(remote, fields):
+    state, client = remote
+    with client.session(), pytest.raises(BookError):
+        client._call("searchBook", **fields)
+    assert not state["calls"]

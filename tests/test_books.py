@@ -66,6 +66,7 @@ class LazyLibrarian:
         }
         self.writes = []
         self.error = None
+        self.search_error = None
         self.bad_status = False
         self.bad_add = False
         self.post_read_error = False
@@ -101,6 +102,12 @@ class LazyLibrarian:
         if self.error:
             raise self.error
         self.rows[0]["status"] = "Wanted"
+        return "OK"
+
+    def search(self, identifier):
+        self.writes.append(("search", identifier, "eBook"))
+        if self.search_error:
+            raise self.search_error
         return "OK"
 
     def status(self, identifier):
@@ -196,15 +203,16 @@ def test_new_book_add_queue_and_verified_wanted(setup):
     assert outcome(result)["submission"] == {
         "submitted": True,
         "book_id": "OL123W",
-        "status": "Wanted",
+        "operation": "searchBook",
     }
     assert setup[1].writes == [
         ("add", "OL123W", "OpenLibrary"),
         ("queue", "OL123W", "eBook"),
+        ("search", "OL123W", "eBook"),
     ]
-    assert "does not confirm a download" in result["answer"]
-    assert outcome(ask(setup))["reason"] == "already_requested"
-    assert len(setup[1].writes) == 2
+    assert "does not confirm that a download" in result["answer"]
+    assert outcome(ask(setup))["reason"] == "already_search_requested"
+    assert len(setup[1].writes) == 3
 
 
 def test_existing_skipped_book_only_queues_ebook_and_preserves_audio_defaults(setup):
@@ -212,13 +220,15 @@ def test_existing_skipped_book_only_queues_ebook_and_preserves_audio_defaults(se
     setup[1].rows = [entry()]
     setup[1].configs["NEWAUDIO_STATUS"] = "Wanted"
     assert outcome(select(setup))["submission"]["submitted"] is True
-    assert setup[1].writes == [("queue", "OL123W", "eBook")]
+    assert setup[1].writes == [
+        ("queue", "OL123W", "eBook"),
+        ("search", "OL123W", "eBook"),
+    ]
 
 
 @pytest.mark.parametrize(
     "status,reason",
     [
-        ("Wanted", "already_requested"),
         ("Snatched", "already_requested"),
         ("Open", "already_in_library"),
         ("Have", "already_in_library"),
@@ -331,8 +341,8 @@ def test_durable_success_blocks_repeat_even_if_remote_status_later_skipped(setup
     enable(setup)
     select(setup)
     setup[1].rows = [entry()]
-    assert outcome(select(setup))["reason"] == "already_requested"
-    assert len(setup[1].writes) == 2
+    assert outcome(select(setup))["reason"] == "preparation_state_changed"
+    assert len(setup[1].writes) == 3
 
 
 def test_old_cwng_movie_tv_and_expired_tokens_are_rejected(setup):
@@ -488,7 +498,10 @@ def test_new_record_already_wanted_by_defaults_is_not_queued_twice(setup):
 
     remote.add = add
     assert outcome(select(setup))["submission"]["submitted"] is True
-    assert remote.writes == [("add", "OL123W", "OpenLibrary")]
+    assert remote.writes == [
+        ("add", "OL123W", "OpenLibrary"),
+        ("search", "OL123W", "eBook"),
+    ]
 
 
 def test_disabling_policy_after_add_prevents_queue_and_reports_partial_write(setup):
@@ -548,6 +561,7 @@ def test_explicit_request_with_single_verified_match_submits_without_confirmatio
     assert setup[1].writes == [
         ("add", "OL123W", "OpenLibrary"),
         ("queue", "OL123W", "eBook"),
+        ("search", "OL123W", "eBook"),
     ]
 
 
@@ -610,3 +624,120 @@ def test_multiple_matches_remain_a_clarification_when_acquisition_enabled(setup)
     assert outcome(result)["reason"] == "book_selection_required"
     assert len(outcome(result)["candidates"]) == 2
     assert not setup[1].writes
+
+
+def test_existing_wanted_book_starts_search_without_readding_or_requeueing(setup):
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    result = ask(setup, author="Example Author")
+    assert outcome(result)["reason"] == "search_requested"
+    assert outcome(result)["submission"] == {
+        "submitted": True,
+        "book_id": "OL123W",
+        "operation": "searchBook",
+    }
+    assert outcome(result)["book_status_before_search"] == "Wanted"
+    assert setup[1].writes == [("search", "OL123W", "eBook")]
+
+
+def test_legacy_uncertain_preparation_does_not_block_first_verified_wanted_search(
+    setup,
+):
+    import hashlib
+    import json
+
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    key = hashlib.sha256(
+        json.dumps(["lazylibrarian", setup[1].target, "OL123W"]).encode()
+    ).hexdigest()
+    books._reserve(setup[2], key, str(uuid4()))
+    books._record(setup[2], key, "uncertain")
+    result = ask(setup)
+    assert outcome(result)["reason"] == "search_requested"
+    assert setup[1].writes == [("search", "OL123W", "eBook")]
+    with sqlite3.connect(setup[2].database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM book_request_journal WHERE artifact_key=?", (key,)
+            ).fetchone()[0]
+            == "uncertain"
+        )
+
+
+def test_acknowledged_search_is_not_repeated_or_claimed_as_active_download(setup):
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    ask(setup)
+    result = ask(setup)
+    assert outcome(result)["reason"] == "already_search_requested"
+    assert outcome(result)["submission"]["submitted"] is False
+    assert "previously acknowledged" in result["answer"]
+    assert "download status is not verified" in result["answer"]
+    assert setup[1].writes == [("search", "OL123W", "eBook")]
+
+
+def test_uncertain_search_cannot_be_replayed_despite_wanted_state(setup):
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    setup[1].search_error = BookError("ll_timeout", uncertain=True)
+    first = ask(setup)
+    assert outcome(first)["submission"]["submitted"] is None
+    setup[1].search_error = None
+    again = ask(setup)
+    assert outcome(again)["submission"]["submitted"] is None
+    assert setup[1].writes == [("search", "OL123W", "eBook")]
+
+
+def test_missing_search_methods_is_rejection_not_success_and_can_be_retried_explicitly(
+    setup,
+):
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    setup[1].search_error = BookError("ll_search_not_configured")
+    first = ask(setup)
+    assert not first["completed"]
+    assert outcome(first)["submission"]["submitted"] is False
+    assert "No search methods are enabled" in first["answer"]
+    setup[1].search_error = None
+    assert outcome(ask(setup))["reason"] == "search_requested"
+    assert setup[1].writes == [("search", "OL123W", "eBook")] * 2
+
+
+def test_wanted_dry_run_never_launches_search(setup):
+    setup[1].rows = [entry(status="Wanted")]
+    assert outcome(ask(setup))["submission"]["reason"] == "dry_run"
+    assert not setup[1].writes
+
+
+def test_policy_rechecked_before_search_after_successful_preparation(setup):
+    setup[1].results = setup[1].results[:1]
+    with patch.object(
+        books, "auto_request_enabled", side_effect=[True, True, True, False]
+    ):
+        result = ask(setup)
+    assert outcome(result)["submission"]["reason"] == "dry_run"
+    assert "ebook is Wanted" in result["answer"]
+    assert setup[1].writes == [
+        ("add", "OL123W", "OpenLibrary"),
+        ("queue", "OL123W", "eBook"),
+    ]
+
+
+def test_wanted_changing_back_to_skipped_during_recheck_does_not_search(setup):
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    setup[1].bad_status = True
+    assert outcome(ask(setup))["reason"] == "ll_search_state_changed"
+    assert not setup[1].writes
+
+
+def test_parallel_explicit_requests_launch_at_most_one_search(setup):
+    from concurrent.futures import ThreadPoolExecutor
+
+    enable(setup)
+    setup[1].rows = [entry(status="Wanted")]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: ask(setup), range(2)))
+    assert setup[1].writes == [("search", "OL123W", "eBook")]
+    assert sum(outcome(r)["submission"]["submitted"] is True for r in results) == 1

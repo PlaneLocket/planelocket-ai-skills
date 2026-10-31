@@ -424,10 +424,10 @@ async def test_natural_book_request_can_complete_in_one_registered_tool_call(has
     api = await llm.async_get_api(hass, api_id, context)
     tool = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
     accepted = {
-        "answer": "LazyLibrarian accepted the ebook request; status Wanted.",
+        "answer": "LazyLibrarian accepted the ebook acquisition search.",
         "completed": True,
         "tool_calls": 0,
-        "observations": [{"submission": {"submitted": True, "status": "Wanted"}}],
+        "observations": [{"submission": {"submitted": True, "operation": "searchBook"}}],
     }
     with (
         patch.object(entry.runtime_data, "async_acquire_book", new_callable=AsyncMock) as acquire,

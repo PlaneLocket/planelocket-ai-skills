@@ -70,8 +70,12 @@ This tool does not acquire audiobooks or enforce a per-request download format.
 If the user explicitly requires EPUB/PDF/MOBI, include format so the backend can
 report the limitation; never silently drop it or promise that format.
 Book acquisition has its own LazyLibrarian switch, independent of movie/TV policy.
-If disabled, say no ebook request was submitted. A verified Wanted status confirms
-an ebook request, not a download. If submitted is null, it may have succeeded:
+If disabled, say no acquisition search was submitted. Wanted is wishlist/search
+eligibility, not evidence that acquisition has begun. Success requires a searchBook
+acknowledgement; report that LazyLibrarian accepted a search, not that a download
+was found, started or completed. Only Snatched/owned states establish progress
+beyond Wanted; a previously acknowledged search is history, not current progress.
+If submitted is null, it may have succeeded:
 report uncertainty without claiming submission failed, stop calling acquisition
 tools, and do not offer or attempt a retry. The operator must check its state."""
 
@@ -334,7 +338,8 @@ class AcquireBookTool(AskHouseholdTool):
         "and numeric choice. "
         "If a user requires EPUB/PDF/MOBI, pass format to report that per-request formats are "
         "unsupported. Never invent IDs, submit URLs, or use this tool for audiobooks. "
-        "A separate policy can disable requests. Wanted status does not confirm a download. "
+        "A separate policy can disable requests. Wanted alone is a wishlist state; "
+        "report searchBook acknowledgement as search acceptance, not a download. "
         "Stop after an uncertain submission; do not retry it or claim that nothing was submitted."
     )
     parameters = probatio.Schema(
