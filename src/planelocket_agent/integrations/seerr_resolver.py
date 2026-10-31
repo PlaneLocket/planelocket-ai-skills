@@ -66,6 +66,11 @@ def find_media(
             "resolved": False,
             "reason": "search_too_broad",
             "media": None,
+            "search": {
+                key: response[key]
+                for key in ("incomplete_reason", "total_results", "total_pages")
+                if key in response
+            },
         }
 
     match = resolve_media(
