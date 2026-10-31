@@ -92,6 +92,8 @@ class TestToolDispatcher(unittest.TestCase):
                 "get_album_tracks",
                 "search_inventory_parts",
                 "get_inventory_stock",
+                "search_media",
+                "get_media_details",
             ),
         )
 
