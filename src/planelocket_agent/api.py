@@ -73,6 +73,7 @@ class InvestigationRequest(BaseModel):
     """A natural-language question submitted to PlaneLocket AI."""
 
     question: str
+    intent: Literal["acquire", "investigate"] | None = None
     continuation_id: str | None = None
     conversation_history: list[ConversationMessage] = Field(
         default_factory=list,
@@ -147,11 +148,17 @@ def investigate(request: InvestigationRequest) -> dict:
     )
 
     dispatcher = ToolDispatcher(LinuxDiagnostics())
-    acquisition_requested = bool(
-        re.match(
-            r"^\s*(?:(?:please|go)\s+)*(?:get|request|download|add)\s+",
-            request.question,
-            flags=re.IGNORECASE,
+    # Preserve explicit intent when callers provide it. Older Home Assistant
+    # clients can still express acquisition through natural language.
+    acquisition_requested = request.intent == "acquire" or (
+        request.intent is None
+        and bool(
+            re.search(
+                r"\\b(?:acquire|download|request|add to (?:my |the )?library)\\b"
+                r"|^\\s*(?:(?:please|go)\\s+)*get\\s+",
+                request.question,
+                flags=re.IGNORECASE,
+            )
         )
     )
 
