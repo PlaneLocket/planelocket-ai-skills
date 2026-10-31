@@ -152,6 +152,7 @@ async def test_incomplete_is_not_success(hass, entry, context, evidence):
     api_id = await setup_entry(hass, entry)
     api = await llm.async_get_api(hass, api_id, context)
     evidence["completed"] = False
+    evidence["control"].update(outcome="blocked", next_action="stop")
     with patch.object(
         entry.runtime_data, "async_ask", return_value=bounded_result(evidence, "token")
     ):
@@ -205,13 +206,16 @@ async def test_movie_acquisition_tool_supports_followup(hass, entry, context, ev
                 tool_name=tool.name,
                 tool_args={
                     "question": "2026",
+                    "title": "Example Film",
                     "year": 2026,
                     "continuation_id": first.data["continuation_id"],
                 },
             )
         )
         assert not followup.error
-        ask.assert_awaited_with("2026", intent="acquire", year=2026, continuation_id=identifier)
+        ask.assert_awaited_with(
+            "2026", intent="acquire", title="Example Film", year=2026, continuation_id=identifier
+        )
 
 
 @pytest.mark.parametrize(
@@ -249,10 +253,19 @@ async def test_acquisition_schema_requires_title_and_reports_missing_title(hass,
             )
         )
         assert failure.error
-        assert failure.data["code"] == "missing_title"
-        assert "title as separate fields" in failure.data["error"]
+        assert failure.data["code"] == "invalid_question"
+        assert "required fields" in failure.data["error"]
         ask.assert_not_called()
-        ask.return_value = {"completed": True, "answer": "No request was submitted."}
+        ask.return_value = {
+            "completed": True,
+            "answer": "No request was submitted.",
+            "control": {
+                "version": 1,
+                "outcome": "completed",
+                "next_action": "respond",
+                "partial": False,
+            },
+        }
         result = await api.async_call_tool(
             llm.ToolInput(
                 tool_name=tool.name,
@@ -323,7 +336,6 @@ async def test_tv_schema_and_continuation_through_registered_api(hass, entry, co
         {"question": "get Example Series"},
         {"question": "get it", "title": None},
         {"question": "get it", "title": "Example Series", "seasons": [True]},
-        {"question": "get it", "title": "Example Series", "seasons": [2], "all_seasons": True},
         {"question": "get it", "title": "Example Series", "media_id": 100},
     ],
 )
@@ -334,7 +346,7 @@ async def test_tv_invalid_arguments_never_reach_backend(hass, entry, context, fi
     with patch.object(entry.runtime_data, "async_ask") as ask:
         result = await api.async_call_tool(llm.ToolInput(tool_name=tool.name, tool_args=fields))
     assert result.error
-    assert "canonical TV title" in result.data["error"]
+    assert "required fields" in result.data["error"]
     ask.assert_not_called()
 
 
@@ -396,10 +408,7 @@ async def test_books_schema_read_only_search_and_selected_offer(hass, entry, con
     "fields",
     [
         {"choice": True},
-        {"choice": 1},
-        {"format": "NZB"},
         {"author": " "},
-        {"continuation_id": "invented"},
         {"offer_id": "invented"},
         {"url": "https://untrusted.test"},
     ],
@@ -424,7 +433,13 @@ async def test_natural_book_request_can_complete_in_one_registered_tool_call(has
     api = await llm.async_get_api(hass, api_id, context)
     tool = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
     accepted = {
-        "answer": "LazyLibrarian accepted the ebook acquisition search.",
+        "control": {
+            "version": 1,
+            "outcome": "completed",
+            "next_action": "respond",
+            "partial": False,
+        },
+        "answer": "The backend accepted the requested operation.",
         "completed": True,
         "tool_calls": 0,
         "observations": [{"submission": {"submitted": True, "operation": "searchBook"}}],
@@ -456,3 +471,113 @@ async def test_natural_book_request_can_complete_in_one_registered_tool_call(has
         choice=None,
     )
     search.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "outcome,action",
+    [
+        ("completed", "respond"),
+        ("clarification_required", "clarify"),
+        ("blocked", "stop"),
+        ("uncertain", "stop"),
+    ],
+)
+@pytest.mark.parametrize(
+    "suffix,method,args",
+    [
+        ("ask_household", "async_ask", {"question": "Our records?"}),
+        ("acquire_movie", "async_ask", {"question": "Get Example", "title": "Example"}),
+        ("acquire_tv", "async_ask", {"question": "Get Example", "title": "Example"}),
+        ("search_books", "async_search_books", {"query": "Example"}),
+        ("acquire_book", "async_acquire_book", {"question": "Get Example", "title": "Example"}),
+    ],
+)
+async def test_all_tools_follow_backend_control_without_provider_interpretation(
+    hass, entry, context, evidence, outcome, action, suffix, method, args
+):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith(suffix))
+    evidence["control"] = {
+        "version": 1,
+        "outcome": outcome,
+        "next_action": action,
+        "partial": False,
+    }
+    evidence["completed"] = True  # Legacy flag must not override backend control.
+    evidence["answer"] = "Authoritative backend decision."
+    evidence["observations"] = [
+        {"provider": "NewProvider", "state": "UnfamiliarState", "submission": {"submitted": None}}
+    ]
+    with patch.object(entry.runtime_data, method, new_callable=AsyncMock) as rpc:
+        rpc.return_value = evidence
+        result = await api.async_call_tool(llm.ToolInput(tool_name=tool.name, tool_args=args))
+    assert result.error is (outcome in {"blocked", "uncertain"})
+    assert result.data["answer"] == "Authoritative backend decision."
+    assert result.data["control"] == evidence["control"]
+    rpc.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "fields", [{"format": "AZW3"}, {"choice": 200}, {"format": "FUTURE_FORMAT", "choice": 0}]
+)
+async def test_backend_capability_changes_need_no_adapter_changes(
+    hass, entry, context, evidence, fields
+):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
+    with patch.object(entry.runtime_data, "async_acquire_book", new_callable=AsyncMock) as rpc:
+        rpc.return_value = evidence
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={"question": "Get Example", "title": "Example", **fields},
+            )
+        )
+    assert not result.error
+    assert rpc.await_args.kwargs["book_format"] == fields.get("format")
+    assert rpc.await_args.kwargs["choice"] == fields.get("choice")
+
+
+async def test_mutating_transport_failure_is_uncertain_and_never_retried(hass, entry, context):
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    tool = next(tool for tool in api.tools if tool.name.endswith("acquire_book"))
+    with patch.object(
+        entry.runtime_data, "async_acquire_book", side_effect=PlaneLocketError("timeout")
+    ) as rpc:
+        result = await api.async_call_tool(
+            llm.ToolInput(
+                tool_name=tool.name, tool_args={"question": "Get Example", "title": "Example"}
+            )
+        )
+    assert result.data["control"]["outcome"] == "uncertain"
+    assert "may have executed" in result.data["error"]
+    rpc.assert_called_once()
+
+
+async def test_public_tool_names_and_argument_shapes_remain_stable(hass, entry, context):
+    from homeassistant.components.ollama.entity import _format_tool
+
+    api_id = await setup_entry(hass, entry)
+    api = await llm.async_get_api(hass, api_id, context)
+    expected = {
+        "ask_household": {"question"},
+        "acquire_movie": {"question", "title", "year", "continuation_id"},
+        "acquire_tv": {"question", "title", "year", "seasons", "all_seasons", "continuation_id"},
+        "search_books": {"query"},
+        "acquire_book": {"question", "title", "author", "format", "continuation_id", "choice"},
+    }
+    assert len(api.tools) == len(expected)
+    for tool in api.tools:
+        name = next(name for name in expected if tool.name.endswith(name))
+        spec = _format_tool(tool, api.custom_serializer)["function"]["parameters"]
+        assert set(spec["properties"]) == expected[name]
+        assert set(spec["required"]) == (
+            {"query"}
+            if name == "search_books"
+            else {"question"}
+            if name == "ask_household"
+            else {"question", "title"}
+        )

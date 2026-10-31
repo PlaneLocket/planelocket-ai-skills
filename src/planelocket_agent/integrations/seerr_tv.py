@@ -6,6 +6,7 @@ from planelocket_agent.integrations.seerr import get_media_details, request_tv
 from planelocket_agent.integrations.seerr_policy import request_authorized
 from planelocket_agent.integrations.seerr_resolver import find_media, normalize_title
 from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
+from planelocket_agent.result_contract import acquisition_response
 
 
 class TVContinuationError(ValueError):
@@ -492,7 +493,14 @@ def tv_result(outcome):
     title = media.get("name") or outcome.get("title") or "TV show"
     year = (media.get("firstAirDate") or "")[:4]
     name = f"{title} ({year})" if year else title
-    if reason in ("no_unique_match", "show_selection_required") and outcome.get(
+    if (
+        "submitted" in outcome.get("submission", {})
+        and outcome["submission"]["submitted"] is None
+    ):
+        answer = (
+            f"{name}: submission outcome is uncertain. Check Seerr before retrying."
+        )
+    elif reason in ("no_unique_match", "show_selection_required") and outcome.get(
         "continuation_id"
     ):
         choices = ", ".join(
@@ -514,10 +522,6 @@ def tv_result(outcome):
         submission = outcome.get("submission", {})
         if submission.get("submitted") is True:
             answer = f"Requested {name}, seasons {submission['seasons']}."
-        elif submission.get("submitted") is None:
-            answer = (
-                f"{name}: submission outcome is uncertain. Check Seerr before retrying."
-            )
         else:
             explanations = {
                 "auto_request_disabled": "automatic acquisition is disabled",
@@ -563,10 +567,13 @@ def tv_result(outcome):
                 + "; ".join(f"{labels[key]}: {value}" for key, value in summary.items())
                 + "."
             )
-    return {
-        "answer": answer,
-        "completed": True,
-        "tool_calls": 0,
-        "observations": [outcome],
-        "continuation_id": outcome.get("continuation_id"),
-    }
+    return acquisition_response(
+        {
+            "answer": answer,
+            "completed": True,
+            "tool_calls": 0,
+            "observations": [outcome],
+            "continuation_id": outcome.get("continuation_id"),
+        },
+        outcome,
+    )
