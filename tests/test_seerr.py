@@ -2,6 +2,7 @@ import io
 import json
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -33,9 +34,11 @@ def test_seerr_get_search(monkeypatch):
         result = _seerr_get("search", {"query": "The Martian"})
         request = mock_build.return_value.open.call_args.args[0]
         assert request.get_method() == "GET"
-        assert (
-            request.full_url == "http://seerr.test:5055/api/v1/search?query=The+Martian"
-        )
+        parsed = urlsplit(request.full_url)
+        assert parsed.scheme == "http"
+        assert parsed.netloc == "seerr.test:5055"
+        assert parsed.path == "/api/v1/search"
+        assert parse_qs(parsed.query) == {"query": ["The Martian"]}
         assert request.get_header("X-api-key") == "fake-test-key"
 
     assert result == payload
