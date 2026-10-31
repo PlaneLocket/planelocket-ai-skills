@@ -49,6 +49,7 @@ def prepare_movie_request(
     return {
         **decision,
         "inspection": inspection,
+        "continuation_id": continuation_id,
     }
 
 
