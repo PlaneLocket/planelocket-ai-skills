@@ -222,9 +222,10 @@ update on Kvasir; no dependency changes are needed.
 ## Book library and acquisition
 
 `search_books` reads books visible to the dedicated Calibre-Web NextGen account.
-`acquire_book` checks CWNG and LazyLibrarian, asks for a numbered bibliographic
-selection, and requests the ebook through LazyLibrarian. CWNG acquisition is not
-used. `LAZYLIBRARIAN_AUTO_REQUEST` defaults to false, independently of movie/TV
+`acquire_book` checks CWNG and LazyLibrarian and requests the ebook through
+LazyLibrarian. An explicit "Get <book> by <author>" should call it directly without
+another confirmation; only ambiguous matches require a numbered clarification.
+CWNG acquisition is not used. `LAZYLIBRARIAN_AUTO_REQUEST` defaults to false, independently of movie/TV
 policy. LazyLibrarian's API cannot enforce per-request ebook formats; explicit
 format requirements receive a limitation instead of being silently dropped.
 

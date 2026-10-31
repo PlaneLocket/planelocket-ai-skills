@@ -88,7 +88,6 @@ class LazyLibrarianClient:
         allowed = {
             "getVersion": set(),
             "getAllBooks": {"limit"},
-            "getBook": {"id"},
             "findBook": {"name"},
             "readCFG": {"name", "group"},
             "addBook": {"id", "source", "wait"},
@@ -98,7 +97,7 @@ class LazyLibrarianClient:
             raise BookError("invalid_arguments")
         if command == "readCFG" and CONFIG_NAMES.get(params["name"]) != params["group"]:
             raise BookError("invalid_arguments")
-        if command in {"getBook", "addBook", "queueBook"}:
+        if command in {"addBook", "queueBook"}:
             params["id"] = book_id(params["id"])
         if command == "queueBook" and params["type"] != "eBook":
             raise BookError("invalid_arguments")
@@ -143,11 +142,20 @@ class LazyLibrarianClient:
                         if isinstance(result.get("Error"), dict)
                         else None
                     )
-                    raise BookError(
-                        "ll_invalid_auth"
-                        if code in (401, 405)
-                        else "ll_request_rejected"
+                    message = (
+                        result["Error"].get("Message")
+                        if isinstance(result.get("Error"), dict)
+                        else None
                     )
+                    failure = (
+                        "ll_invalid_auth" if code == 401 else "ll_request_rejected"
+                    )
+                    if code == 405 and isinstance(message, str):
+                        if message.startswith("Unknown command:"):
+                            failure = "ll_unsupported_command"
+                        elif "not available with read-only api access key" in message:
+                            failure = "ll_forbidden"
+                    raise BookError(failure)
                 if command == "readCFG":
                     if not isinstance(result, str) or not re.fullmatch(
                         r"\[[A-Za-z]{1,30}\]", result
@@ -162,9 +170,7 @@ class LazyLibrarianClient:
                 if command == "addBook" and result is not True:
                     # Metadata import may have side effects before returning failure.
                     raise BookError("ll_add_unverified", uncertain=True)
-                if command in {"getVersion", "getBook"} and not isinstance(
-                    result, dict
-                ):
+                if command == "getVersion" and not isinstance(result, dict):
                     raise BookError("ll_invalid_response")
                 if command in {"findBook", "getAllBooks"} and not isinstance(
                     result, list
@@ -267,22 +273,17 @@ class LazyLibrarianClient:
             return self._call("queueBook", id=identifier, type="eBook")
 
     def status(self, identifier):
+        # getBook has a Python implementation upstream but is not registered in
+        # a0fe7646's API command table. Use the supported inventory command.
+        identifier = book_id(identifier)
         with self.session():
-            result = self._call("getBook", id=identifier)
-            rows = result.get("book")
-            if (
-                not isinstance(rows, list)
-                or len(rows) != 1
-                or not isinstance(rows[0], dict)
-            ):
-                raise BookError("ll_invalid_response")
-            row = {k.lower(): v for k, v in rows[0].items()}
-            if book_id(row.get("bookid")) != identifier:
+            row = next(
+                (item for item in self.inventory() if item["book_id"] == identifier),
+                None,
+            )
+            if row is None:
                 raise BookError("ll_identity_changed")
-            return {
-                "title": self.safe_text(row.get("bookname"), 1000),
-                "status": self.safe_text(row.get("status"), 30),
-            }
+            return {key: row[key] for key in ("title", "authors", "status")}
 
 
 @lru_cache(maxsize=2)

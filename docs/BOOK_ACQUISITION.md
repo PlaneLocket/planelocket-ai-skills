@@ -1,9 +1,10 @@
 # Book lookup through CWNG; acquisition through LazyLibrarian
 
 HAL's `search_books` reads the Calibre-Web NextGen library. `acquire_book` checks
-that library and LazyLibrarian, resolves a bibliographic book, asks for a numbered
-selection, and requests its **ebook** through LazyLibrarian. CWNG acquisition APIs
-are not used. Downstream searches/downloads/imports remain with the existing stack.
+that library and LazyLibrarian, resolves a bibliographic book, and requests its
+**ebook** through LazyLibrarian. A single verified match proceeds without another
+confirmation; only multiple matches require a numbered clarification. CWNG
+acquisition APIs are not used. Downstream searches/downloads/imports remain with the existing stack.
 
 ## Private configuration on Kvasir
 
@@ -64,16 +65,26 @@ require review in LazyLibrarian rather than being silently overridden.
 
 If no local LazyLibrarian record matches, `findBook` uses its configured metadata
 source. Returned source/book IDs remain private backend state. The backend filters
-title/author and presents numbered book choices including publication date, ISBN
-and language when supplied. These identify bibliographic records, not verified
-provider releases or downloadable file formats. Even one candidate requires an
-explicit numbered selection; a search result never proves unique edition identity.
+title/author and, when clarification is needed, presents numbered book choices
+with publication date, ISBN and language when supplied. These identify
+bibliographic records, not verified provider releases or downloadable formats.
+A single usable exact title/author match proceeds through fresh checks and policy
+without another confirmation. This does not assert globally unique edition identity.
+Multiple matches return a numbered clarification:
 
 ```json
 {"question":"option 1","title":"Example Book","continuation_id":"<returned UUID>","choice":1}
 ```
 
-Simple numeric replies also work without `choice`. Stored selected title/author
+"Get <book> by <author>" is sufficient authorization: HAL should call `acquire_book`
+directly, without asking whether to request it or doing a preliminary library search.
+The tool already checks ownership and existing requests. Library questions such as
+"Do I have <book>?" use `search_books` and never acquire it. The book flag enables
+writes; it does not introduce another user confirmation.
+
+For an ambiguous result, simple numeric replies also work without `choice`.
+Whenever a structured `choice` is sent, the returned `continuation_id` is mandatory.
+Stored selected title/author
 remain authoritative. IDs expire after 15 minutes and are bound to the CWNG
 account and LazyLibrarian address/key. Changed metadata-source settings, missing or
 changed book identity, cross-media IDs and consumed/expired IDs are rejected.
@@ -96,15 +107,18 @@ Ignored: `addBook` uses server defaults and must not implicitly request an audio
 This gate does not change that setting. Existing Skipped records need no addBook
 and only their ebook status is modified.
 
-With `LAZYLIBRARIAN_AUTO_REQUEST=false`, selection returns `submitted=false`,
+With `LAZYLIBRARIAN_AUTO_REQUEST=false`, evaluation returns `submitted=false`,
 reason `dry_run`, and explicitly says no ebook request was submitted. No addBook,
 queueBook or searchBook commands run. Library/metadata/configuration reads can run.
 
 When enabled, the adapter uses `addBook&id=...&source=...&wait=1` only if the record
 is absent, verifies the inserted identity, then uses `queueBook&id=...&type=eBook`
 if needed. It never queues AudioBook or changes existing audiobook status. Finally
-`getBook` verifies that exact book's Wanted state (or advancement to Snatched/
-Have/Open). A bare `OK` is insufficient. The result reports the book ID and verified
+the supported `getAllBooks` inventory API verifies that exact book's title, author
+and Wanted state (or advancement to Snatched/Have/Open). The pinned build defines
+a Python `_getbook` method but does not register `getBook` as an API command; the
+adapter never calls that unsupported command. Unknown-command and read-only-key
+permission errors are reported separately from invalid credentials. A bare `OK` is insufficient. The result reports the book ID and verified
 state, not an invented job ID or a completed download. LazyLibrarian's configured
 scheduler handles Wanted books; this integration does not force a search, download
 or import. Adding a record follows LazyLibrarian's metadata/default settings.
@@ -171,9 +185,11 @@ and `llm_api.py` from `homeassistant/custom_components/planelocket_ai/` into
 `/config/custom_components/planelocket_ai/`, run `ha core check`, and restart HA.
 Start a fresh HAL conversation with Assist and PlaneLocket AI selected.
 
-Validate a known CWNG title with `search_books`; then validate a numbered book
-selection with the LL switch false. Enable book requests only for the intended
-live test. The acceptance criterion is the correct book's verified LazyLibrarian
+Validate a known CWNG title with `search_books`; then validate an explicit book
+request with the LL switch false. A single match should reach dry-run without
+confirmation; multiple matches should ask for clarification. Enable book requests
+only for the intended live test. If an earlier request returned an uncertain result, inspect its existing
+LazyLibrarian status first; do not blindly resubmit or clear the journal. The acceptance criterion is the correct book's verified LazyLibrarian
 status. Downloads/imports remain outside this software deployment validation.
 
 Rollback: disable only `LAZYLIBRARIAN_AUTO_REQUEST`, restore the previous backend

@@ -75,6 +75,8 @@ def _failure(code, *, uncertain=False):
         "invalid_continuation": "this book selection expired, was consumed, or belongs to another configuration; start again",
         "library_scope_limited": "the CWNG account does not have the full-library view required for acquisition checks",
         "incomplete_library_search": "the CWNG library check was incomplete; narrow the title",
+        "ll_unsupported_command": "LazyLibrarian does not support the requested API command",
+        "ll_forbidden": "the LazyLibrarian API key lacks permission for this operation",
         "ll_timeout": "LazyLibrarian timed out while processing the request",
         "ll_incomplete_inventory": "the LazyLibrarian inventory check was incomplete",
         "ll_identity_changed": "the selected LazyLibrarian book identity changed or could not be verified",
@@ -366,6 +368,28 @@ def acquire_book(
                         "format": book_format,
                     },
                 )
+                if len(candidates) == 1:
+                    # The user's acquisition request already authorizes this book.
+                    # Reuse the same fresh checks and durable submission path as a
+                    # clarified request; the internal token is not a consent gate.
+                    result = acquire_book(
+                        question,
+                        title,
+                        author=author,
+                        book_format=book_format,
+                        continuation_id=identifier,
+                        choice=1,
+                        storage=storage,
+                    )
+                    if search is not None:
+                        result["observations"][0].update(
+                            search_evidence, search_complete=False
+                        )
+                        if search["records_skipped"]:
+                            result["answer"] += (
+                                f" Unusable metadata records skipped: {search['records_skipped']}."
+                            )
+                    return result
                 choices = "; ".join(
                     f"{i}: {c['title']} — {', '.join(c['authors'])} — {c.get('year') or 'date unknown'} — {c['source']}"
                     for i, c in enumerate(candidates, 1)
@@ -488,9 +512,11 @@ def acquire_book(
                     queue_acknowledged = True
                 # A bare OK is not proof: verify this exact book's Wanted state.
                 confirmed = client.status(selected["book_id"])
-                if _normal(confirmed["title"]) != _normal(
-                    selected["title"]
-                ) or confirmed["status"] not in {"Wanted", "Snatched", "Have", "Open"}:
+                if (
+                    _normal(confirmed["title"]) != _normal(selected["title"])
+                    or not _authors_match(selected["authors"][0], confirmed["authors"])
+                    or confirmed["status"] not in {"Wanted", "Snatched", "Have", "Open"}
+                ):
                     raise BookError("ll_queue_unverified", uncertain=True)
             except BookError as exc:
                 uncertain = added or queue_acknowledged or exc.uncertain
