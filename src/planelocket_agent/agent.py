@@ -78,11 +78,26 @@ class PlaneLocketAgent:
         user_request: str,
         dispatcher: ToolDispatcher,
         max_tool_calls: int = 6,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> ReasoningResult:
         """Select a Skill and investigate using authorized tools."""
 
         skills = self.registry.discover()
-        selected = self.selector.select(user_request, skills)
+
+        selection_context = user_request
+
+        if conversation_history:
+            recent_messages = conversation_history[-4:]
+
+            selection_context = (
+                "\n".join(
+                    f"{message['role']}: {message['content']}"
+                    for message in recent_messages
+                )
+                + f"\nuser: {user_request}"
+            )
+
+        selected = self.selector.select(selection_context, skills)
 
         if selected is None:
             return ReasoningResult(
@@ -140,6 +155,7 @@ class PlaneLocketAgent:
         result = reasoning_agent.run(
             user_request=user_request,
             skill_instructions=instructions,
+            conversation_history=conversation_history,
         )
 
         return ReasoningResult(

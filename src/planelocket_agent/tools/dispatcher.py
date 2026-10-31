@@ -22,6 +22,12 @@ from planelocket_agent.integrations.inventree import (
     get_part_stock,
     search_parts,
 )
+from planelocket_agent.integrations.seerr import (
+    get_media_details,
+    search_media,
+)
+from planelocket_agent.integrations.seerr_storage import SeerrRequestStorage
+from planelocket_agent.integrations.seerr_workflow import prepare_movie_request
 from planelocket_agent.memory.recorder import MemoryRecorder
 from planelocket_agent.tools.definitions import (
     ToolArgument,
@@ -202,6 +208,39 @@ class ToolDispatcher:
                     ),
                 },
             ),
+            "search_media": ToolDefinition(
+                name="search_media",
+                description=(
+                    "Search Seerr for movies and television shows, including titles "
+                    "not currently in the Emby library. Returns matching media "
+                    "and availability information when provided by Seerr. "
+                    "This tool only searches; it does not request downloads."
+                ),
+                handler=search_media,
+                arguments={
+                    "query": "Required string. Movie or television title to search for.",
+                },
+            ),
+            "get_media_details": ToolDefinition(
+                name="get_media_details",
+                description=(
+                    "Retrieve detailed information and Seerr media status for a "
+                    "movie or television series. Requires the media type and TMDB ID "
+                    "returned by search_media. This tool is read-only and does not "
+                    "submit media requests."
+                ),
+                handler=get_media_details,
+                arguments={
+                    "media_type": (
+                        "Required string. Either 'movie' or 'tv', "
+                        "as returned by search_media."
+                    ),
+                    "media_id": ToolArgument(
+                        description="Positive integer TMDB ID returned by search_media.",
+                        value_type=int,
+                    ),
+                },
+            ),
         }
 
         self._knowledge = None
@@ -229,6 +268,34 @@ class ToolDispatcher:
             arguments={
                 "filename": (
                     "Required string. Must be a filename returned by list_references."
+                ),
+            },
+        )
+
+    def bind_media_requests(self, storage: SeerrRequestStorage) -> None:
+        """Register explicit movie acquisition workflow."""
+
+        def prepare(title: str, year: int | None = None) -> dict:
+            return prepare_movie_request(
+                title=title,
+                year=year,
+                storage=storage,
+            )
+
+        self._definitions["prepare_movie_request"] = ToolDefinition(
+            name="prepare_movie_request",
+            description=(
+                "Prepare a movie acquisition requested explicitly by the user. "
+                 "Requests are submitted only when automatic acquisition is enabled. "
+                "Never use for general movie searches."
+            ),
+            handler=prepare,
+            arguments={
+                "title": "Required string. Exact movie title.",
+                "year": ToolArgument(
+                    description="Optional integer. Release year, if known.",
+                    value_type=int,
+                    required=False,
                 ),
             },
         )

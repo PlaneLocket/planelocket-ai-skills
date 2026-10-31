@@ -44,6 +44,7 @@ class ReasoningAgent:
         self,
         user_request: str,
         skill_instructions: str,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> ReasoningResult:
         """Investigate until finished or the tool budget is exhausted."""
 
@@ -111,6 +112,9 @@ class ReasoningAgent:
                 ),
             },
         ]
+
+        if conversation_history:
+            messages[1:1] = conversation_history
 
         observations = []
         tool_calls = 0

@@ -27,3 +27,5 @@ dist/
 
 # Local backup files
 *.bak
+# Local runtime data
+data/
