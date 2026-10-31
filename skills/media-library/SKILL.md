@@ -1,9 +1,16 @@
 ---
 name: media-library
-description: Answer questions about movies, television shows, and music available in the household Emby media library.
+description: Answer questions about owned books, authors, formats, movies, television shows, seasons, episodes, actors, music, artists, albums and tracks in household collections.
 ---
 
 # Media Library
+
+## Book lookup
+
+Use `search_books(query)` for questions about books the user has, including
+title, author, or combined queries. Report the returned records and formats.
+An incomplete search cannot establish absence. Do not turn a lookup into an
+acquisition or ask permission to acquire. These investigation tools are read-only.
 
 ## Purpose
 
@@ -140,45 +147,8 @@ For questions about tracks on a particular album:
 - Do not assume that a partial artist-name match identifies the requested artist.
 - Only report music confirmed by Emby's tool results.
 
-## Movie acquisition through Seerr
+## Acquisition boundary
 
-Use Seerr when the user explicitly asks to acquire a movie.
-
-Examples:
-- "Get Supergirl"
-- "Download the new Superman movie"
-- "Request Blade Runner"
-
-Do not initiate acquisition for informational questions such as
-"Tell me about Supergirl" or "Do we have Supergirl?"
-
-### Available tools
-
-- `search_media`: Search Seerr for movies and television.
-- `get_media_details`: Inspect a specific Seerr media item.
-- `prepare_movie_request`: Resolve a movie and process an
-  explicitly requested acquisition. The release year is optional.
-
-### Acquisition workflow
-
-1. Identify the movie requested by the user.
-2. Call `prepare_movie_request` with its title and, if known, year.
-3. If multiple movies match, present the candidates and ask which
-   movie the user intended.
-4. When the user clarifies, continue the original acquisition request.
-5. Report the actual result returned by the tool.
-
-When automatic requests are disabled, explain that the acquisition
-was evaluated in dry-run mode and was not submitted.
-
-When automatic requests are enabled, report successful submission
-only when the tool confirms `submitted=true`.
-
-Never invent media IDs or claim a request was submitted without
-a successful tool result.
-
-Do not require a separate confirmation after the user has explicitly
-requested acquisition. Clarifying an ambiguous title is not a
-request for additional authorization.
-
-Television acquisition is not yet supported.
+These investigation tools are read-only. Movie, television and ebook acquisition
+are handled by the API's explicit acquisition routes, not this investigation loop.
+Music acquisition is not implemented. Do not offer unsupported actions.

@@ -1,9 +1,11 @@
 """Generic HA tool registration and forwarding for the backend API."""
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import probatio
+from homeassistant.components.conversation.chat_log import current_chat_log
 from homeassistant.helpers import llm
 
 from .client import PlaneLocketError, validate_control, validate_question
@@ -54,21 +56,59 @@ class PlaneLocketAPI(llm.API):
     entry: PlaneLocketConfigEntry
 
     async def async_get_api_instance(self, llm_context):
+        turn = Turn()
+        tools = [
+            kind(self.entry, turn)
+            for kind in (
+                AskHouseholdTool,
+                AcquireMovieTool,
+                AcquireTVTool,
+                SearchBooksTool,
+                AcquireBookTool,
+            )
+        ]
+        prompt = PROMPT
+        try:
+            metadata = await self.entry.runtime_data.async_capabilities()
+            tools[0].description = metadata["lookup_description"]
+            prompt += "\n" + metadata["instructions"]
+        except PlaneLocketError:
+            pass  # Static tools and native Assist remain usable during an outage.
         return llm.APIInstance(
             api=self,
-            api_prompt=PROMPT,
+            api_prompt=prompt,
             llm_context=llm_context,
-            tools=[
-                kind(self.entry)
-                for kind in (
-                    AskHouseholdTool,
-                    AcquireMovieTool,
-                    AcquireTVTool,
-                    SearchBooksTool,
-                    AcquireBookTool,
-                )
-            ],
+            tools=tools,
         )
+
+
+@dataclass
+class Turn:
+    """Serialize calls and retain terminal control for this API instance only."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    stopped: llm.ToolResult | None = None
+
+
+def conversation_inputs():
+    """Copy only user/assistant text; tool evidence cannot become user intent."""
+    log = current_chat_log.get()
+    if log is None:
+        return {}
+    messages = [
+        {"role": item.role, "content": item.content[:4000]}
+        for item in log.content
+        if item.role in {"user", "assistant"}
+        and isinstance(item.content, str)
+        and item.content.strip()
+    ]
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index]["role"] == "user":
+            return {
+                "user_question": messages[index]["content"],
+                "conversation_history": messages[max(0, index - 10) : index],
+            }
+    return {}
 
 
 class BackendTool(llm.Tool):
@@ -83,10 +123,20 @@ class BackendTool(llm.Tool):
     aliases = {}
     defaults = {}
 
-    def __init__(self, entry):
+    def __init__(self, entry, turn=None):
         self._entry = entry
+        self._turn = turn or Turn()
 
     async def async_call(self, hass, tool_input, llm_context):
+        async with self._turn.lock:
+            if self._turn.stopped is not None:
+                return self._turn.stopped
+            result = await self._async_call(hass, tool_input, llm_context)
+            if result.data["control"]["next_action"] == "stop":
+                self._turn.stopped = result
+            return result
+
+    async def _async_call(self, hass, tool_input, llm_context):
         attempted = False
         try:
             args = tool_input.tool_args
@@ -115,6 +165,7 @@ class BackendTool(llm.Tool):
                     if key not in self.positional
                 },
             }
+            kwargs.update(conversation_inputs())
             attempted = True
             result = await getattr(self._entry.runtime_data, self.method)(
                 *(args[key] for key in self.positional), **kwargs

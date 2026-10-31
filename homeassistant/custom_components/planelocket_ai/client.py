@@ -254,10 +254,16 @@ class PlaneLocketClient:
         media_type: str | None = None,
         seasons: list[int] | None = None,
         all_seasons: bool = False,
+        user_question: str | None = None,
+        conversation_history: list | None = None,
     ) -> dict[str, Any]:
         """Forward one question; never retry a model-backed POST automatically."""
         question = validate_question(question)
         body = {"question": question}
+        if user_question is not None:
+            body.update(
+                user_question=user_question, conversation_history=conversation_history or []
+            )
         if intent is not None:
             if intent not in {"acquire", "investigate"}:
                 raise PlaneLocketError("invalid_question")
@@ -276,15 +282,45 @@ class PlaneLocketClient:
         )
         return bounded_result(payload, self._token)
 
-    async def async_search_books(self, query: str) -> dict[str, Any]:
+    async def async_capabilities(self):
+        payload = await self._async_request("GET", "/capabilities", deadline=2)
+        if (
+            not isinstance(payload, dict)
+            or type(payload.get("version")) is not int
+            or payload["version"] != 1
+            or any(
+                not isinstance(payload.get(key), str) or not 1 <= len(payload[key]) <= 12000
+                for key in ("lookup_description", "instructions")
+            )
+        ):
+            raise PlaneLocketError("invalid_response")
+        return {key: payload[key] for key in ("lookup_description", "instructions")}
+
+    async def async_search_books(
+        self, query: str, *, user_question=None, conversation_history=None
+    ) -> dict[str, Any]:
         query = validate_question(query)
+        body = {"query": query}
+        if user_question is not None:
+            body.update(
+                user_question=user_question, conversation_history=conversation_history or []
+            )
         payload = await self._async_request(
-            "POST", "/books/search", deadline=REQUEST_TIMEOUT, body={"query": query}
+            "POST", "/books/search", deadline=REQUEST_TIMEOUT, body=body
         )
         return bounded_result(payload, self._token)
 
     async def async_acquire_book(
-        self, question, title, *, author=None, book_format=None, continuation_id=None, choice=None
+        self,
+        question,
+        title,
+        *,
+        author=None,
+        book_format=None,
+        continuation_id=None,
+        choice=None,
+        user_question=None,
+        conversation_history=None,
     ) -> dict[str, Any]:
         body = validate_book_fields(
             question,
@@ -294,6 +330,10 @@ class PlaneLocketClient:
             continuation_id=continuation_id,
             choice=choice,
         )
+        if user_question is not None:
+            body.update(
+                user_question=user_question, conversation_history=conversation_history or []
+            )
         payload = await self._async_request(
             "POST", "/books/acquire", deadline=REQUEST_TIMEOUT, body=body
         )
@@ -306,8 +346,9 @@ class PlaneLocketClient:
             raise PlaneLocketError("invalid_question")
         headers = {"Accept": "application/json"}
         kwargs: dict[str, Any] = {}
-        if body is not None:
+        if body is not None or path == "/capabilities":
             headers["Authorization"] = f"Bearer {self._token}"
+        if body is not None:
             kwargs["json"] = body
         try:
             # Includes streamed body consumption, not just response headers.

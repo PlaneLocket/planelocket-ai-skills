@@ -6,6 +6,7 @@ from typing import Any
 from planelocket_agent.diagnostics.interfaces import (
     SystemDiagnostics,
 )
+from planelocket_agent.integrations.books import lookup_books
 from planelocket_agent.integrations.emby import (
     get_album_tracks,
     get_artist_albums,
@@ -47,6 +48,14 @@ class ToolDispatcher:
         self._backend = backend
 
         self._definitions = {
+            "search_books": ToolDefinition(
+                name="search_books",
+                description="Read-only search of owned books by title, author, or both. Returns visible records, formats and completeness; never requests acquisition.",
+                handler=lookup_books,
+                arguments={
+                    "query": "Required string. Book title, author, or combined query."
+                },
+            ),
             "get_memory_usage": ToolDefinition(
                 name="get_memory_usage",
                 description="Measure current system memory and swap capacity.",
@@ -286,7 +295,7 @@ class ToolDispatcher:
             name="prepare_movie_request",
             description=(
                 "Prepare a movie acquisition requested explicitly by the user. "
-                 "Requests are submitted only when automatic acquisition is enabled. "
+                "Requests are submitted only when automatic acquisition is enabled. "
                 "Never use for general movie searches."
             ),
             handler=prepare,

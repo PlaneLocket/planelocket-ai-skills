@@ -77,6 +77,7 @@ class TestToolDispatcher(unittest.TestCase):
         self.assertEqual(
             self.dispatcher.available_tools(),
             (
+                "search_books",
                 "get_memory_usage",
                 "get_disk_usage",
                 "get_resource_pressure",
