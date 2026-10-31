@@ -30,7 +30,7 @@ def request_authorized(
     if already_available or already_requested:
         return False
 
-    return confirmed or auto_request_enabled()
+    return auto_request_enabled()
 
 
 def evaluate_movie_request(
